@@ -10,7 +10,6 @@ dotenv.config();
 
 const app = express();
 
-app.use(cors());
 app.use(express.json());
 
 app.get("/health", (_, res) => {
@@ -19,12 +18,18 @@ app.get("/health", (_, res) => {
 
 app.use("/goals", goalRoutes);
 
-app.listen(3001, () => {
-  console.log("Server running on 3001");
-});
-
 app.use("/test", testRoutes);
 
 app.use("/tasks", taskRoutes);
 
 app.use("/adapt", adaptRoutes);
+
+const PORT = process.env.PORT || 3001;
+
+app.listen(PORT, () => {
+  console.log(`Server running on ${PORT}`);
+});
+
+app.use(cors({
+  origin: "*",
+}));
