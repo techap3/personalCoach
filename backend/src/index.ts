@@ -12,6 +12,18 @@ const app = express();
 
 app.use(express.json());
 
+// ✅ CRITICAL FIX
+app.use(
+  cors({
+    origin: "*", // TEMP: allow all (we'll tighten later)
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+// ✅ HANDLE PREFLIGHT (THIS IS YOUR MISSING PIECE)
+app.options("*", cors());
+
 app.get("/health", (_, res) => {
   res.send("OK");
 });
@@ -29,12 +41,3 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on ${PORT}`);
 });
-
-// ✅ CRITICAL FIX
-app.use(
-  cors({
-    origin: "*", // TEMP: allow all (we'll tighten later)
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
