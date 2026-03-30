@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { User } from "@supabase/supabase-js";
+import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 import Login from "./components/Login";
@@ -20,26 +20,46 @@ type Task = {
 };
 
 export default function Home() {
+  console.log("🚀 PAGE RENDERED");
+
   const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [goalId, setGoalId] = useState<string | null>(null);
-  const [tokenCopied, setTokenCopied] = useState(false);
+
   const [adapting, setAdapting] = useState(false);
   const [adaptError, setAdaptError] = useState<string | null>(null);
-  // 🔐 Handle auth state changes
-  useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
-    });
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+  const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
+  const token = session?.access_token;
+
+  console.log("ENV BASE_URL:", BASE_URL);
+  console.log("SESSION:", session);
+  console.log("TOKEN:", token);
+
+  // 🔐 Auth setup (SAFE)
+  useEffect(() => {
+    console.log("🔄 AUTH EFFECT RUNNING");
+
+    supabase.auth
+      .getSession()
+      .then(({ data }) => {
+        console.log("✅ INITIAL SESSION:", data);
+        setUser(data.session?.user ?? null);
+        setSession(data.session ?? null);
+      })
+      .catch((err) => {
+        console.error("❌ SESSION ERROR:", err);
+      });
+
+    const { data: { subscription } } =
+      supabase.auth.onAuthStateChange((_event, session) => {
+        console.log("🔁 AUTH CHANGE:", session);
         setUser(session?.user ?? null);
-      }
-    );
+        setSession(session ?? null);
+      });
 
     return () => subscription.unsubscribe();
   }, []);
@@ -48,35 +68,21 @@ export default function Home() {
   const logout = async () => {
     await supabase.auth.signOut();
     setUser(null);
+    setSession(null);
     setPlan(null);
     setTasks(null);
     setGoalId(null);
-    setAdaptError(null);
   };
 
-  // 🔑 Copy auth token
-  const copyToken = async () => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-
-      if (token) {
-        await navigator.clipboard.writeText(token);
-        setTokenCopied(true);
-        setTimeout(() => setTokenCopied(false), 2000); // Hide after 2 seconds
-      }
-    } catch (error) {
-      console.error("Failed to copy token:", error);
-    }
-  };
-
-  // 📦 Fetch pending tasks from DB
+  // 📦 Fetch tasks
   const fetchTasks = async (goalId: string) => {
-    const session = await supabase.auth.getSession();
-    const token = session.data.session?.access_token;
+    if (!BASE_URL || !token) {
+      console.warn("Missing BASE_URL or token");
+      return;
+    }
 
     const res = await fetch(
-      `http://localhost:3001/tasks?goal_id=${goalId}&status=pending`,
+      `${BASE_URL}/tasks?goal_id=${goalId}&status=pending`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -85,33 +91,23 @@ export default function Home() {
     );
 
     if (!res.ok) {
-      console.error("Failed to fetch tasks:", res.statusText);
+      console.error("Fetch tasks failed");
       return;
     }
 
     const data = await res.json();
-    setTasks(data);
+    setTasks([...data]);
   };
 
-  // 🌟 Adapt tasks via AI endpoint
+  // 🌟 Adapt tasks
   const adaptTasks = async () => {
-    if (!goalId) {
-      console.warn("adaptTasks: goalId missing");
-      return;
-    }
-
-    const session = await supabase.auth.getSession();
-    const token = session.data.session?.access_token;
-
-    if (!token) {
-      console.warn("adaptTasks: no auth token available");
-      return;
-    }
+    if (!goalId || !BASE_URL || !token) return;
 
     setAdapting(true);
     setAdaptError(null);
+
     try {
-      const resp = await fetch("http://localhost:3001/tasks/adapt", {
+      const res = await fetch(`${BASE_URL}/tasks/adapt`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -120,121 +116,104 @@ export default function Home() {
         body: JSON.stringify({ goal_id: goalId }),
       });
 
-      if (!resp.ok) {
-        let errorMessage = "Task adaptation failed";
-        try {
-          const errorPayload = await resp.json();
-          errorMessage = errorPayload.error || `Status ${resp.status}: ${resp.statusText}`;
-        } catch (_parseErr) {
-          errorMessage = `Status ${resp.status}: ${resp.statusText}`;
-        }
-        console.error("adaptTasks failed:", errorMessage);
-        setAdaptError(errorMessage);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setAdaptError(err.error || "Adapt failed");
         return;
       }
 
       await fetchTasks(goalId);
-      setAdaptError(null);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      console.error("adaptTasks error:", errorMsg);
-      setAdaptError(errorMsg);
+      console.error(err);
+      setAdaptError("Network error");
     } finally {
       setAdapting(false);
     }
   };
 
-  // � Count pending tasks
-  const pendingCount = tasks?.filter((t) => t.status === "pending").length || 0;
+  const pendingCount =
+    tasks?.filter((t) => t.status === "pending").length || 0;
 
-  // �🔐 Show login if not authenticated
-  if (!user) {
-    return <Login onLogin={() => {}} />;
-  }
-
+  // 🔴 ALWAYS SHOW SOMETHING (NO BLANK SCREEN)
   return (
     <div className="p-6">
-      {/* Header */}
-      <div className="flex justify-between items-center max-w-2xl mx-auto mb-6">
-        <div>
-          <h1 className="text-xl font-bold">AI Personal Coach</h1>
-          <p className="text-sm text-gray-500">{user?.email}</p>
-        </div>
-
-        <div className="flex gap-2">
-          <button
-            onClick={copyToken}
-            className="bg-blue-100 text-blue-700 px-3 py-1 rounded text-sm"
-          >
-            Copy Token
-          </button>
-          <button
-            onClick={logout}
-            className="bg-gray-200 px-3 py-1 rounded"
-          >
-            Logout
-          </button>
-        </div>
+      {/* DEBUG PANEL */}
+      <div className="mb-4 p-3 bg-gray-100 text-xs rounded">
+        <div><b>User:</b> {user ? "Yes" : "No"}</div>
+        <div><b>Session:</b> {session ? "Yes" : "No"}</div>
+        <div><b>Token:</b> {token ? "Yes" : "No"}</div>
+        <div><b>Backend URL:</b> {BASE_URL || "Missing"}</div>
       </div>
 
-      {/* Success message */}
-      {tokenCopied && (
-        <div className="max-w-2xl mx-auto mb-4 p-2 bg-green-100 text-green-700 rounded text-sm text-center">
-          ✅ Token copied to clipboard!
-        </div>
-      )}
+      {/* NOT LOGGED IN */}
+      {!user ? (
+        <Login onLogin={() => {}} />
+      ) : (
+        <>
+          {/* Header */}
+          <div className="flex justify-between items-center max-w-2xl mx-auto mb-6">
+            <div>
+              <h1 className="text-xl font-bold">AI Personal Coach</h1>
+              <p className="text-sm text-gray-500">{user.email}</p>
+            </div>
 
-      {/* Goal + Plan */}
-      <GoalForm
-        goalId={goalId}
-        fetchTasks={fetchTasks}
-        onPlanGenerated={(planData: PlanResponse) => {
-          setPlan(planData);
-          setAdaptError(null);
-        }}
-        onTasksGenerated={(id: string) => {
-          setGoalId(id);
-          setAdaptError(null);
-          fetchTasks(id); // ✅ correct place for fetching tasks
-        }}
-      />
+            <button
+              onClick={logout}
+              className="bg-gray-200 px-3 py-1 rounded"
+            >
+              Logout
+            </button>
+          </div>
 
-      {/* Plan View */}
-      <PlanView plan={plan} />
-
-      {/* Tasks View */}
-      <TasksView
-        tasks={tasks}
-        setTasks={setTasks}
-      />
-
-      {goalId && (
-        <div className="max-w-2xl mx-auto mt-6 text-center">
-          {pendingCount > 0 ? (
-            <>
-              <button
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded disabled:opacity-50"
-                onClick={adaptTasks}
-                disabled={adapting}
-              >
-                {adapting ? "Improving..." : "Improve My Plan"}
-              </button>
-              <div className="text-sm text-gray-500 mt-2">
-                {pendingCount} pending task{pendingCount !== 1 ? "s" : ""}
-              </div>
-            </>
+          {/* WAIT FOR TOKEN */}
+          {!token ? (
+            <div className="text-center text-gray-500 mt-10">
+              Preparing session...
+            </div>
           ) : (
-            <div className="p-3 bg-yellow-100 text-yellow-700 rounded text-sm">
-              ℹ️ All tasks are completed or skipped. Generate new tasks to adapt them.
-            </div>
-          )}
+            <>
+              <GoalForm
+                goalId={goalId}
+                fetchTasks={fetchTasks}
+                token={token}
+                onPlanGenerated={(planData) => {
+                  setPlan(planData);
+                }}
+                onTasksGenerated={(id) => {
+                  setGoalId(id);
+                  fetchTasks(id);
+                }}
+              />
 
-          {adaptError && (
-            <div className="mt-3 p-2 bg-red-100 text-red-700 rounded text-sm">
-              ❌ {adaptError}
-            </div>
+              <PlanView plan={plan} />
+
+              <TasksView
+                tasks={tasks}
+                setTasks={setTasks}
+                token={token}
+              />
+
+              {goalId && (
+                <div className="max-w-2xl mx-auto mt-6 text-center">
+                  {pendingCount > 0 && (
+                    <button
+                      className="bg-blue-600 text-white px-4 py-2 rounded"
+                      onClick={adaptTasks}
+                    >
+                      Improve My Plan
+                    </button>
+                  )}
+
+                  {adaptError && (
+                    <div className="mt-3 text-red-500 text-sm">
+                      ❌ {adaptError}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
           )}
-        </div>
+        </>
       )}
     </div>
   );

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "@/lib/supabase";
 import { PlanResponse } from "@/types/plan";
 
 export default function GoalForm({
@@ -9,28 +8,33 @@ export default function GoalForm({
   fetchTasks,
   onPlanGenerated,
   onTasksGenerated,
+  token,
 }: {
   goalId: string | null;
   fetchTasks: (goalId: string) => void;
   onPlanGenerated: (data: PlanResponse) => void;
   onTasksGenerated: (goalId: string) => void;
+  token: string | undefined;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [localGoalId, setLocalGoalId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // ✅ Step 1: Create goal + generate plan
+  const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
+
   const createGoal = async () => {
-    if (!title) return;
+    if (!title || !BASE_URL || !token) {
+      console.warn("Missing data", { title, BASE_URL, token });
+      return;
+    }
 
     setLoading(true);
 
     try {
-      const session = await supabase.auth.getSession();
-      const token = session.data.session?.access_token;
+      console.log("🚀 Creating goal...");
 
-      const res = await fetch("http://localhost:3001/goals", {
+      const res = await fetch(`${BASE_URL}/goals`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -39,34 +43,42 @@ export default function GoalForm({
         body: JSON.stringify({ title, description }),
       });
 
+      console.log("📡 Response status:", res.status);
+
+      if (!res.ok) {
+        const err = await res.text();
+        console.error("❌ Backend error:", err);
+        return;
+      }
+
       const data = await res.json();
 
-      console.log("GOAL RESPONSE:", data);
+      console.log("✅ GOAL RESPONSE:", data);
 
-      // store goalId locally (internal, for task generation path)
       setLocalGoalId(data.goal.id);
-
-      // send plan to parent
       onPlanGenerated(data.plan);
+
     } catch (err) {
-      console.error("Goal creation failed:", err);
+      console.error("❌ Goal creation failed:", err);
     } finally {
       setLoading(false);
     }
   };
 
-  // ✅ Step 2: Generate today's tasks
   const generateTasks = async () => {
     const effectiveGoalId = goalId || localGoalId;
-    if (!effectiveGoalId) return;
+
+    if (!effectiveGoalId || !BASE_URL || !token) {
+      console.warn("Missing for task gen", { effectiveGoalId });
+      return;
+    }
 
     setLoading(true);
 
     try {
-      const session = await supabase.auth.getSession();
-      const token = session.data.session?.access_token;
+      console.log("🧠 Generating tasks...");
 
-      const res = await fetch("http://localhost:3001/tasks/generate", {
+      const res = await fetch(`${BASE_URL}/tasks/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -75,39 +87,47 @@ export default function GoalForm({
         body: JSON.stringify({ goal_id: effectiveGoalId }),
       });
 
-      await res.json(); // Ensure request completes
+      if (!res.ok) {
+        const err = await res.text();
+        console.error("❌ Task gen error:", err);
+        return;
+      }
 
-      // notify parent to fetch tasks from DB
-      if (!effectiveGoalId) throw new Error("Goal ID missing after generation");
+      await res.json();
 
       onTasksGenerated(effectiveGoalId);
+
     } catch (err) {
-      console.error("Task generation failed:", err);
+      console.error("❌ Task generation failed:", err);
     } finally {
       setLoading(false);
     }
   };
 
+  if (!token) {
+    return <div className="text-center mt-10">Waiting for auth...</div>;
+  }
+
   return (
-    <div className="flex flex-col gap-4 max-w-md mx-auto mt-10">
-      <h2 className="text-xl font-semibold">Create a Goal</h2>
+    <div className="max-w-md mx-auto mt-10 border p-4 rounded bg-white shadow">
+      <h2 className="text-xl font-semibold mb-2">Create a Goal</h2>
 
       <input
-        className="border p-2 rounded"
+        className="border p-2 rounded w-full mb-2"
         placeholder="Goal (e.g. Get fit)"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
       />
 
       <textarea
-        className="border p-2 rounded"
+        className="border p-2 rounded w-full mb-2"
         placeholder="Description"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
       />
 
       <button
-        className="bg-blue-600 text-white p-2 rounded disabled:opacity-50"
+        className="bg-blue-600 text-white p-2 rounded w-full mb-2"
         onClick={createGoal}
         disabled={loading}
       >
@@ -116,25 +136,11 @@ export default function GoalForm({
 
       {(goalId || localGoalId) && (
         <button
-          className="bg-green-600 text-white p-2 rounded disabled:opacity-50"
+          className="bg-green-600 text-white p-2 rounded w-full"
           onClick={generateTasks}
           disabled={loading}
         >
-          {loading ? "Generating..." : "Generate Today's Tasks"}
-        </button>
-      )}
-
-      {(goalId || localGoalId) && (
-        <button
-          className="bg-yellow-600 text-white p-2 rounded disabled:opacity-50 mt-2"
-          onClick={() => {
-            const effectiveGoalId = goalId || localGoalId;
-            if (!effectiveGoalId) return;
-            fetchTasks(effectiveGoalId);
-          }}
-          disabled={loading}
-        >
-          Refresh Tasks
+          Generate Today&apos;s Tasks
         </button>
       )}
     </div>
