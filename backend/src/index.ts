@@ -33,11 +33,8 @@ app.listen(PORT, () => {
 // ✅ CRITICAL FIX
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "https://your-vercel-url.vercel.app", // later
-    ],
+    origin: "*", // TEMP: allow all (we'll tighten later)
     methods: ["GET", "POST", "PUT", "DELETE"],
-    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
