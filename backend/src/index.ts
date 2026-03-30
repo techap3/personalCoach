@@ -30,6 +30,14 @@ app.listen(PORT, () => {
   console.log(`Server running on ${PORT}`);
 });
 
-app.use(cors({
-  origin: "*",
-}));
+// ✅ CRITICAL FIX
+app.use(
+  cors({
+    origin: [
+      "http://localhost:3000",
+      "https://your-vercel-url.vercel.app", // later
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+  })
+);
