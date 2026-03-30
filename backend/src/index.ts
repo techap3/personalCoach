@@ -1,7 +1,8 @@
 import dotenv from "dotenv";
-import testRoutes from "./routes/test";
 import express from "express";
 import cors from "cors";
+
+import testRoutes from "./routes/test";
 import goalRoutes from "./routes/goals";
 import taskRoutes from "./routes/tasks";
 import adaptRoutes from "./routes/adapt";
@@ -10,30 +11,29 @@ dotenv.config();
 
 const app = express();
 
-app.use(express.json());
-
-// ✅ CRITICAL FIX
+// ✅ CORS MUST BE FIRST
 app.use(
   cors({
-    origin: "*", // TEMP: allow all (we'll tighten later)
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
-// ✅ HANDLE PREFLIGHT (THIS IS YOUR MISSING PIECE)
-app.options("*", cors());
+// ❌ REMOVE THIS (breaks in express 5)
+// app.options("*", cors());
 
+app.use(express.json());
+
+// health
 app.get("/health", (_, res) => {
   res.send("OK");
 });
 
+// routes
 app.use("/goals", goalRoutes);
-
 app.use("/test", testRoutes);
-
 app.use("/tasks", taskRoutes);
-
 app.use("/adapt", adaptRoutes);
 
 const PORT = process.env.PORT || 3001;
