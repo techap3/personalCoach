@@ -26,7 +26,7 @@ export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
 
   const [plan, setPlan] = useState<PlanResponse | null>(null);
-  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]); // ✅ NEVER NULL
   const [goalId, setGoalId] = useState<string | null>(null);
 
   const [adapting, setAdapting] = useState(false);
@@ -39,20 +39,12 @@ export default function Home() {
   console.log("SESSION:", session);
   console.log("TOKEN:", token);
 
-  // 🔐 Auth setup (SAFE)
+  // 🔐 AUTH
   useEffect(() => {
-    console.log("🔄 AUTH EFFECT RUNNING");
-
-    supabase.auth
-      .getSession()
-      .then(({ data }) => {
-        console.log("✅ INITIAL SESSION:", data);
-        setUser(data.session?.user ?? null);
-        setSession(data.session ?? null);
-      })
-      .catch((err) => {
-        console.error("❌ SESSION ERROR:", err);
-      });
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null);
+      setSession(data.session ?? null);
+    });
 
     const { data: { subscription } } =
       supabase.auth.onAuthStateChange((_event, session) => {
@@ -64,42 +56,47 @@ export default function Home() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // 🚪 Logout
+  // 🚪 LOGOUT
   const logout = async () => {
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);
     setPlan(null);
-    setTasks(null);
+    setTasks([]);
     setGoalId(null);
   };
 
-  // 📦 Fetch tasks
+  // 📦 FETCH TASKS (FIXED)
   const fetchTasks = async (goalId: string) => {
-    if (!BASE_URL || !token) {
-      console.warn("Missing BASE_URL or token");
-      return;
-    }
+    if (!BASE_URL || !token) return;
 
-    const res = await fetch(
-      `${BASE_URL}/tasks?goal_id=${goalId}&status=pending`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+    console.log("📡 Fetching ALL tasks...");
+
+    try {
+      const res = await fetch(
+        `${BASE_URL}/tasks?goal_id=${goalId}`, // ✅ REMOVED status filter
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      const data = await res.json();
+
+      console.log("📋 RAW TASK RESPONSE:", data);
+
+      const normalized = Array.isArray(data) ? data : data.tasks || [];
+
+      console.log("✅ NORMALIZED TASKS (ALL):", normalized);
+
+      setTasks(normalized);
+      } catch (err) {
+        console.error("❌ Fetch tasks error:", err);
       }
-    );
+    };
 
-    if (!res.ok) {
-      console.error("Fetch tasks failed");
-      return;
-    }
-
-    const data = await res.json();
-    setTasks([...data]);
-  };
-
-  // 🌟 Adapt tasks
+  // 🌟 ADAPT
   const adaptTasks = async () => {
     if (!goalId || !BASE_URL || !token) return;
 
@@ -122,7 +119,9 @@ export default function Home() {
         return;
       }
 
-      await fetchTasks(goalId);
+      console.log("✅ Adapt success → refetching");
+
+      await fetchTasks(goalId); // ✅ CRITICAL
     } catch (err) {
       console.error(err);
       setAdaptError("Network error");
@@ -131,26 +130,23 @@ export default function Home() {
     }
   };
 
-  const pendingCount =
-    tasks?.filter((t) => t.status === "pending").length || 0;
+//  const pendingCount = tasks.filter((t) => t.status === "pending").length;
 
-  // 🔴 ALWAYS SHOW SOMETHING (NO BLANK SCREEN)
   return (
     <div className="p-6">
-      {/* DEBUG PANEL */}
+      {/* DEBUG */}
       <div className="mb-4 p-3 bg-gray-100 text-xs rounded">
         <div><b>User:</b> {user ? "Yes" : "No"}</div>
         <div><b>Session:</b> {session ? "Yes" : "No"}</div>
         <div><b>Token:</b> {token ? "Yes" : "No"}</div>
-        <div><b>Backend URL:</b> {BASE_URL || "Missing"}</div>
+        <div><b>Backend:</b> {BASE_URL || "Missing"}</div>
       </div>
 
-      {/* NOT LOGGED IN */}
       {!user ? (
         <Login onLogin={() => {}} />
       ) : (
         <>
-          {/* Header */}
+          {/* HEADER */}
           <div className="flex justify-between items-center max-w-2xl mx-auto mb-6">
             <div>
               <h1 className="text-xl font-bold">AI Personal Coach</h1>
@@ -165,7 +161,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* WAIT FOR TOKEN */}
           {!token ? (
             <div className="text-center text-gray-500 mt-10">
               Preparing session...
@@ -176,33 +171,34 @@ export default function Home() {
                 goalId={goalId}
                 fetchTasks={fetchTasks}
                 token={token}
-                onPlanGenerated={(planData) => {
-                  setPlan(planData);
-                }}
+                onPlanGenerated={(planData) => setPlan(planData)}
                 onTasksGenerated={(id) => {
                   setGoalId(id);
-                  fetchTasks(id);
+                  fetchTasks(id); // ✅ immediate fetch
                 }}
               />
 
               <PlanView plan={plan} />
 
-              <TasksView
-                tasks={tasks}
-                setTasks={setTasks}
-                token={token}
-              />
+              {/* ✅ ONLY SHOW IF TASKS EXIST */}
+              {tasks.length > 0 && (
+                <TasksView
+                  tasks={tasks}
+                  token={token}
+                  refreshTasks={() => goalId && fetchTasks(goalId)}
+                />
+              )}
 
-              {goalId && (
+              {/* ADAPT BUTTON */}
+              {goalId && tasks.length > 0 && tasks.some(t => t.status !== "pending") && (
                 <div className="max-w-2xl mx-auto mt-6 text-center">
-                  {pendingCount > 0 && (
-                    <button
-                      className="bg-blue-600 text-white px-4 py-2 rounded"
-                      onClick={adaptTasks}
-                    >
-                      Improve My Plan
-                    </button>
-                  )}
+                  <button
+                    className="bg-blue-600 text-white px-4 py-2 rounded"
+                    onClick={adaptTasks}
+                    disabled={adapting}
+                  >
+                    {adapting ? "Improving..." : "Improve My Plan"}
+                  </button>
 
                   {adaptError && (
                     <div className="mt-3 text-red-500 text-sm">

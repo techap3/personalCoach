@@ -1,7 +1,5 @@
 "use client";
 
-import { useState } from "react";
-
 type Task = {
   id: string;
   title: string;
@@ -12,43 +10,20 @@ type Task = {
 
 export default function TasksView({
   tasks,
-  setTasks,
-  token, // ✅ NEW
+  token,
+  refreshTasks,
 }: {
-  tasks: Task[] | null;
-  setTasks: (tasks: Task[]) => void;
-  token: string | undefined;
+  tasks: Task[];
+  token: string;
+  refreshTasks: () => void;
 }) {
-  const [updateError, setUpdateError] = useState<string | null>(null);
-  const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null);
-
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
 
   if (!tasks || tasks.length === 0) return null;
 
-  const completedCount = tasks.filter((t) => t.status === "done").length;
-  const totalCount = tasks.length;
-  const pendingCount = tasks.filter((t) => t.status !== "done").length;
-  const progress = totalCount > 0 ? (completedCount / totalCount) * 100 : 0;
-
   const updateStatus = async (taskId: string, status: string) => {
-    if (!token || !BASE_URL) {
-      setUpdateError("Missing auth or backend config");
-      return;
-    }
-
-    const originalTasks = tasks;
-
-    // ✅ optimistic update
-    const updatedTasks = tasks.map((t) =>
-      t.id === taskId ? { ...t, status } : t
-    );
-    setTasks(updatedTasks);
-    setUpdatingTaskId(taskId);
-    setUpdateError(null);
-
     try {
-      const resp = await fetch(`${BASE_URL}/tasks/update`, {
+      const res = await fetch(`${BASE_URL}/tasks/update`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -60,100 +35,101 @@ export default function TasksView({
         }),
       });
 
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        setUpdateError(err.error || "Update failed");
-        setTasks(originalTasks); // rollback
+      if (!res.ok) {
+        console.error("❌ Failed to update");
         return;
       }
 
-      console.log(`✅ Task ${taskId} updated`);
+      refreshTasks();
     } catch (err) {
-      console.error("Task update error:", err);
-      setUpdateError("Network error");
-      setTasks(originalTasks); // rollback
-    } finally {
-      setUpdatingTaskId(null);
+      console.error("❌ Update error:", err);
     }
   };
 
+  // 🔥 Split tasks
+  const pendingTasks = tasks.filter((t) => t.status === "pending");
+  const completedTasks = tasks.filter((t) => t.status === "done");
+
+  // 🔥 Progress
+  const total = tasks.length;
+  const done = completedTasks.length;
+  const progress = total > 0 ? Math.round((done / total) * 100) : 0;
+
   return (
-    <div className="max-w-2xl mx-auto mt-10 px-3 sm:px-0">
-      <div className="bg-white border rounded-2xl shadow-lg p-6 space-y-6">
-        <div className="flex justify-between">
-          <h2 className="text-2xl font-bold">Today&apos;s Tasks</h2>
-          <span className="text-sm text-gray-500">
-            {new Date().toLocaleDateString()}
+    <div className="max-w-2xl mx-auto mt-10">
+      <h2 className="text-xl font-semibold mb-2">Today&apos;s Tasks</h2>
+
+      {/* 🔥 PROGRESS */}
+      <div className="mb-6">
+        <div className="flex justify-between text-sm mb-1">
+          <span>Progress</span>
+          <span>
+            {progress}% ({done}/{total})
           </span>
         </div>
 
-        {/* Progress */}
-        <div>
-          <div className="flex justify-between text-sm mb-1">
-            <span>Progress</span>
-            <span>{Math.round(progress)}%</span>
-          </div>
-          <div className="w-full bg-gray-200 h-2 rounded">
-            <div
-              className="bg-blue-500 h-2 rounded"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
+        <div className="w-full bg-gray-200 rounded h-2">
+          <div
+            className="bg-blue-600 h-2 rounded transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
         </div>
+      </div>
 
-        {/* Nudge */}
-        {completedCount === totalCount ? (
-          <div className="text-green-600 text-sm">
-            🎉 All tasks done!
-          </div>
-        ) : (
-          <div className="text-yellow-600 text-sm">
-            {pendingCount} pending tasks
-          </div>
-        )}
+      {/* 🔥 PENDING */}
+      {pendingTasks.length > 0 && (
+        <>
+          <h3 className="text-md font-semibold mb-2 text-gray-700">
+            🟢 Pending Tasks
+          </h3>
 
-        {updateError && (
-          <div className="text-red-500 text-sm">
-            ❌ {updateError}
-          </div>
-        )}
-
-        {/* Tasks */}
-        <div className="space-y-4">
-          {tasks.map((task) => (
-            <div key={task.id} className="border p-4 rounded">
+          {pendingTasks.map((task) => (
+            <div key={task.id} className="border p-4 rounded mb-3">
               <h3 className="font-semibold">{task.title}</h3>
-              <p className="text-sm text-gray-600">{task.description}</p>
+              <p>{task.description}</p>
 
-              <div className="text-xs text-gray-500 mt-1">
+              <p className="text-sm text-gray-500">
                 Difficulty: {task.difficulty}/5
-              </div>
+              </p>
 
-              <div className="flex gap-2 mt-3">
+              <div className="flex gap-2 mt-2">
                 <button
-                  onClick={() => updateStatus(task.id, "done")}
-                  disabled={updatingTaskId === task.id}
                   className="bg-green-500 text-white px-3 py-1 rounded"
+                  onClick={() => updateStatus(task.id, "done")}
                 >
                   Done
                 </button>
 
                 <button
-                  onClick={() => updateStatus(task.id, "skipped")}
-                  disabled={updatingTaskId === task.id}
                   className="bg-red-500 text-white px-3 py-1 rounded"
+                  onClick={() => updateStatus(task.id, "skipped")}
                 >
                   Skip
                 </button>
               </div>
-
-              <div className="text-xs mt-2">
-                Status: {task.status || "pending"}
-              </div>
             </div>
           ))}
-        </div>
-      </div>
+        </>
+      )}
+
+      {/* 🔥 COMPLETED */}
+      {completedTasks.length > 0 && (
+        <>
+          <h3 className="text-md font-semibold mt-6 mb-2 text-gray-500">
+            ✅ Completed Today
+          </h3>
+
+          {completedTasks.map((task) => (
+            <div
+              key={task.id}
+              className="border p-4 rounded mb-2 opacity-60 bg-gray-50"
+            >
+              <h3 className="font-semibold line-through">{task.title}</h3>
+              <p className="text-sm text-gray-500">{task.description}</p>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }

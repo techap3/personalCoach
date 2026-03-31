@@ -2,69 +2,70 @@ import { Router } from "express";
 import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { getSupabaseClient } from "../db/supabase";
 import { generateTasks } from "../services/ai/taskGenerator";
-import { parseTasks } from "../services/ai/taskParser";
 import { generateAdaptedTasks } from "../services/ai/adaptTasks";
-import { parseAdaptedTasks } from "../services/ai/taskAdaptParser";
 import { computeMetrics } from "../services/metrics";
 
 const router = Router();
 
+/* =========================
+   GENERATE TASKS
+========================= */
 router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id } = req.body;
-
-  console.log(`🎯 GENERATE TASKS: Starting for goal_id=${goal_id}`);
-
   const supabase = getSupabaseClient(req.token!);
 
-  // get plan
-  const { data: planData, error: planError } = await supabase
+  console.log(`🎯 GENERATE TASKS: goal_id=${goal_id}`);
+
+  // Prevent duplicate generation
+  const { data: existing } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("goal_id", goal_id)
+    .eq("status", "pending");
+
+  if (existing && existing.length > 0) {
+    console.log("⚠️ Tasks already exist → skipping");
+    return res.json({ tasks: existing });
+  }
+
+  const { data: plan } = await supabase
     .from("plans")
     .select("*")
     .eq("goal_id", goal_id)
     .maybeSingle();
 
-  if (planError) {
-    console.error(`❌ GENERATE TASKS: Failed to fetch plan for goal_id=${goal_id}`, planError);
-    return res.status(500).json({ error: "Failed to fetch plan" });
+  if (!plan) {
+    return res.status(400).json({ error: "No plan found" });
   }
 
-  if (!planData) {
-    console.warn(`⚠️ GENERATE TASKS: No plan found for goal_id=${goal_id}`);
-    return res.status(404).json({ error: "Plan not found. Generate a plan first." });
-  }
+  const tasks = await generateTasks(plan.plan_json);
 
-  console.log(`📋 GENERATE TASKS: Found plan for goal_id=${goal_id}`);
-
-  const rawTasks = await generateTasks(planData.plan_json);
-
-  const parsed = parseTasks(rawTasks);
-
-  console.log(`✅ GENERATE TASKS: Generated ${parsed.tasks.length} tasks for goal_id=${goal_id}`);
-
-  // save tasks
   const today = new Date().toISOString().split("T")[0];
 
-  const tasksToInsert = parsed.tasks.map((t: any) => ({
+  const toInsert = tasks.map((t: any) => ({
     ...t,
     goal_id,
+    status: "pending",
     scheduled_date: today,
   }));
 
-  await supabase.from("tasks").insert(tasksToInsert);
+  await supabase.from("tasks").insert(toInsert);
 
-  console.log(`💾 GENERATE TASKS: Persisted ${tasksToInsert.length} tasks for goal_id=${goal_id}`);
+  console.log(`✅ Inserted ${toInsert.length} tasks`);
 
-  res.json(parsed);
+  return res.json({ tasks: toInsert });
 });
 
+/* =========================
+   UPDATE TASK STATUS
+========================= */
 router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
   const { task_id, status } = req.body;
 
-  console.log(`📝 UPDATE TASK: task_id=${task_id}, status=${status}`);
+  console.log(`📝 UPDATE TASK: ${task_id} → ${status}`);
 
   if (!task_id || !status) {
-    console.warn(`⚠️ UPDATE TASK: Missing task_id or status`);
-    return res.status(400).json({ error: "task_id and status are required" });
+    return res.status(400).json({ error: "task_id and status required" });
   }
 
   const supabase = getSupabaseClient(req.token!);
@@ -75,20 +76,20 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
     .eq("id", task_id);
 
   if (error) {
-    console.error(`❌ UPDATE TASK: Failed for task_id=${task_id}:`, error);
-    return res.status(500).json({ error: error.message || "Failed to update task" });
+    console.error("❌ Update failed", error);
+    return res.status(500).json({ error: error.message });
   }
 
-  console.log(`✅ UPDATE TASK: Successfully updated task_id=${task_id} to status=${status}`);
-
-  res.json({ success: true });
+  return res.json({ success: true });
 });
 
+/* =========================
+   FETCH TASKS
+========================= */
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id, status } = req.query;
 
   const supabase = getSupabaseClient(req.token!);
-
   const today = new Date().toISOString().split("T")[0];
 
   let query = supabase
@@ -97,7 +98,6 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
     .eq("goal_id", goal_id)
     .eq("scheduled_date", today);
 
-  // Filter by status if provided
   if (status) {
     query = query.eq("status", status as string);
   }
@@ -107,16 +107,19 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   if (error) return res.status(500).json(error);
 
   console.log(
-    `📋 FETCH TASKS: goal_id=${goal_id}, status=${status || "all"}, found=${data?.length || 0}`
+    `📋 FETCH TASKS: goal_id=${goal_id}, status=${status || "all"}, count=${data?.length || 0}`
   );
 
   res.json(data);
 });
 
+/* =========================
+   ADAPT TASKS (FIXED CORE)
+========================= */
 router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id } = req.body;
 
-  console.log(`📝 ADAPT: Starting task adaptation for goal_id=${goal_id}`);
+  console.log(`🧠 ADAPT START: goal_id=${goal_id}`);
 
   const supabase = getSupabaseClient(req.token!);
 
@@ -125,107 +128,107 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
     .select("*")
     .eq("goal_id", goal_id);
 
-  if (error) {
-    console.error(`❌ ADAPT: Failed to fetch tasks for goal_id=${goal_id}`);
-    return res.status(500).json({ error: "Failed to fetch tasks" });
-  }
+  if (error) return res.status(500).json({ error: "Fetch failed" });
 
-  if (!tasks || tasks.length === 0) {
-    console.warn(`⚠️ ADAPT: No tasks found for goal_id=${goal_id}`);
-    return res.status(400).json({
-      error: "No tasks found. Generate tasks first.",
-    });
+  if (!tasks?.length) {
+    return res.status(400).json({ error: "No tasks found" });
   }
 
   const metrics = computeMetrics(tasks);
 
-  console.log(
-    `📊 ADAPT: Metrics - completionRate=${metrics.completionRate}, totalTasks=${tasks.length}`
-  );
+  const pendingTasks = tasks.filter((t) => t.status === "pending");
 
-  const pendingTasks = tasks.filter((task) => task.status === "pending");
-
-  if (pendingTasks.length === 0) {
-    console.warn(`⚠️ ADAPT: No pending tasks for goal_id=${goal_id}`);
-    return res.status(400).json({ error: "No pending tasks to adapt" });
+  if (!pendingTasks.length) {
+    return res.status(400).json({ error: "No pending tasks" });
   }
 
   console.log(
-    `🎯 ADAPT: Processing ${pendingTasks.length} pending tasks for adaptation`
+    `📊 completionRate=${metrics.completionRate}, pending=${pendingTasks.length}`
   );
 
-  const recentHistory = tasks
-    .sort((a: any, b: any) => {
-      const dateA = new Date(a.scheduled_date || a.created_at || 0).getTime();
-      const dateB = new Date(b.scheduled_date || b.created_at || 0).getTime();
-      return dateB - dateA;
-    })
+  const history = tasks
+    .sort(
+      (a: any, b: any) =>
+        new Date(b.created_at).getTime() -
+        new Date(a.created_at).getTime()
+    )
     .slice(0, 10);
 
   try {
-    const raw = await generateAdaptedTasks({
+    const aiResult = await generateAdaptedTasks({
       tasks: pendingTasks,
       metrics,
-      history: recentHistory,
+      history,
     });
 
-    const parsed = parseAdaptedTasks(raw, pendingTasks, metrics);
+    if (!aiResult?.updated_tasks?.length) {
+      throw new Error("Empty AI response");
+    }
 
-    // 🔥 Step 1: Mark existing pending tasks as archived
-    const pendingTaskIds = pendingTasks.map((t) => t.id);
+    /* =========================
+       🔥 HARD CONTROL (IMPORTANT)
+    ========================= */
 
-    const { error: archiveError } = await supabase
+    let adapted = aiResult.updated_tasks;
+
+    // ✅ enforce SAME LENGTH
+    adapted = adapted.slice(0, pendingTasks.length);
+
+    while (adapted.length < pendingTasks.length) {
+      adapted.push(pendingTasks[adapted.length]);
+    }
+
+    console.log(
+      `🛠 Enforced task count: ${adapted.length} (was ${aiResult.updated_tasks.length})`
+    );
+
+    /* =========================
+       ARCHIVE OLD TASKS
+    ========================= */
+
+    const ids = pendingTasks.map((t) => t.id);
+
+    await supabase
       .from("tasks")
       .update({ status: "archived" })
-      .in("id", pendingTaskIds);
+      .in("id", ids);
 
-    if (archiveError) {
-      console.error(
-        `❌ ADAPT: Failed to archive pending tasks for goal_id=${goal_id}`,
-        archiveError
-      );
-      return res.status(500).json({ error: "Failed to archive tasks" });
-    }
+    console.log(`📦 Archived ${ids.length} tasks`);
 
-    console.log(
-      `📦 ADAPT: Archived ${pendingTasks.length} pending tasks for goal_id=${goal_id}`
-    );
+    /* =========================
+       INSERT NEW TASKS
+    ========================= */
 
-    // 🔥 Step 2: Insert new adapted tasks
     const today = new Date().toISOString().split("T")[0];
-    const newTasks = parsed.updated_tasks.map((adaptedTask: any, index: number) => ({
-      ...adaptedTask,
+
+    const newTasks = adapted.map((t: any) => ({
       goal_id,
-      scheduled_date: today,
+      title: t.title,
+      description: t.description,
+      difficulty: t.difficulty,
       status: "pending",
+      scheduled_date: today,
     }));
 
-    const { error: insertError } = await supabase
+    const { data: inserted, error: insertError } = await supabase
       .from("tasks")
-      .insert(newTasks);
+      .insert(newTasks)
+      .select();
 
     if (insertError) {
-      console.error(
-        `❌ ADAPT: Failed to insert adapted tasks for goal_id=${goal_id}`,
-        insertError
-      );
-      return res.status(500).json({ error: "Failed to insert adapted tasks" });
+      console.error("❌ Insert failed", insertError);
+      return res.status(500).json({ error: "Insert failed" });
     }
 
-    console.log(
-      `✅ ADAPT: Successfully created ${newTasks.length} adapted tasks for goal_id=${goal_id}`
-    );
+    console.log(`✅ Inserted ${inserted.length} tasks`);
 
     return res.json({
       metrics,
-      updated_tasks: parsed.updated_tasks,
+      updated_tasks: inserted,
     });
   } catch (err) {
-    console.error(`❌ ADAPT: Error adapting tasks for goal_id=${goal_id}:`, err);
-
-    return res.status(500).json({
-      error: "Task adaptation failed",
-    });
+    console.error("❌ ADAPT ERROR:", err);
+    return res.status(500).json({ error: "Adapt failed" });
   }
 });
 
