@@ -10,54 +10,76 @@ const Schema = z.object({
   ),
 });
 
+// 🧠 smarter JSON extraction
 function extractJSON(raw: string) {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-
-  if (start === -1 || end === -1) {
-    throw new Error("No JSON found in AI response");
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("No JSON found");
+    return match[0];
+  } catch {
+    throw new Error("JSON extraction failed");
   }
-
-  return raw.slice(start, end + 1);
 }
 
-// 🔥 enforce task safety and preserve maximum original size
+// 🔒 semantic + structural enforcement
 function enforceTaskConstraints(
   adapted: any[],
   original: any[],
   metrics: any
 ) {
-  // if adapted isn't a valid non-empty array, fallback
   if (!Array.isArray(adapted) || adapted.length === 0) {
-    console.warn("⚠️ Task adaptation output invalid/empty; using original tasks as fallback.");
-
-    return original.map((t) => ({
-      title: t.title,
-      description: t.description,
-      difficulty: t.difficulty,
-    }));
+    console.warn("⚠️ Invalid adapted tasks → fallback");
+    return original;
   }
 
-  // Use at most original length; allow flexible count
-  const effective = adapted.slice(0, original.length);
+  // 🔥 enforce SAME LENGTH strictly
+  let finalTasks = [...adapted];
 
-  return effective.map((task, index) => {
+  if (finalTasks.length !== original.length) {
+    console.warn("⚠️ Length mismatch → correcting");
+
+    finalTasks = finalTasks.slice(0, original.length);
+
+    while (finalTasks.length < original.length) {
+      finalTasks.push(original[finalTasks.length]);
+    }
+  }
+
+  // 🔥 sanitize each task
+  finalTasks = finalTasks.map((task, i) => {
+    const fallback = original[i];
+
     let difficulty = task.difficulty;
 
-    if (metrics.completionRate > 0.8) {
+    if (typeof difficulty !== "number") {
+      difficulty = fallback.difficulty;
+    }
+
+    // 🔥 controlled adaptation (NOT too aggressive)
+    if (metrics.done === 0) {
+      difficulty = Math.max(difficulty, fallback.difficulty);
+    } else if (metrics.completionRate > 0.8) {
       difficulty = Math.max(difficulty, 3);
     } else if (metrics.completionRate < 0.4) {
       difficulty = Math.min(difficulty, 2);
     }
 
-    const fallback = original[index] || { title: "", description: "", difficulty: 1 };
-
     return {
-      title: task.title || fallback.title,
-      description: task.description || fallback.description,
+      title:
+        typeof task.title === "string" && task.title.length > 3
+          ? task.title
+          : fallback.title,
+
+      description:
+        typeof task.description === "string"
+          ? task.description
+          : fallback.description,
+
       difficulty,
     };
   });
+
+  return finalTasks;
 }
 
 export function parseAdaptedTasks(
@@ -65,24 +87,44 @@ export function parseAdaptedTasks(
   originalTasks: any[],
   metrics: any
 ) {
+  console.log("🧠 RAW INPUT:", raw);
+
   try {
-    const json = extractJSON(raw);
+    const jsonStr = extractJSON(raw);
 
-    const parsed = Schema.parse(JSON.parse(json));
+    let parsed;
 
-    const safeTasks = enforceTaskConstraints(
-      parsed.updated_tasks,
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (e) {
+      console.warn("⚠️ JSON.parse failed → attempting recovery");
+
+      // 🧠 recovery attempt: remove trailing commas
+      const cleaned = jsonStr.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]");
+      parsed = JSON.parse(cleaned);
+    }
+
+    const safe = Schema.safeParse(parsed);
+
+    if (!safe.success) {
+      console.warn("⚠️ Zod validation failed → partial fallback");
+      return {
+        updated_tasks: originalTasks,
+      };
+    }
+
+    const finalTasks = enforceTaskConstraints(
+      safe.data.updated_tasks,
       originalTasks,
       metrics
     );
 
     return {
-      updated_tasks: safeTasks,
+      updated_tasks: finalTasks,
     };
   } catch (err) {
-    console.error("❌ Task Adapt parse failed:", raw);
+    console.error("❌ HARD FALLBACK:", err);
 
-    // 🔥 hard fallback
     return {
       updated_tasks: originalTasks.map((t) => ({
         title: t.title,

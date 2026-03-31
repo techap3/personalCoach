@@ -140,7 +140,7 @@ export default function GoalForm({
           onClick={generateTasks}
           disabled={loading}
         >
-          Generate Today&apos;s Tasks
+          {loading ? "Generating..." : "Generate Tasks (once)"}
         </button>
       )}
     </div>

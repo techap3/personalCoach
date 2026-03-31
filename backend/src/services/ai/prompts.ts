@@ -29,21 +29,29 @@ Return ONLY valid JSON in this format:
   ];
 }
 
-export function buildTaskPrompt(plan: PlanResponse): ChatCompletionMessageParam[] {
+export function buildTaskPrompt(plan: PlanResponse): ChatCompletionMessageParam[]  {
   return [
     {
       role: "system",
       content: `
-You are a personal coach.
+You are an intelligent personal coach.
 
-Convert a plan into TODAY's actionable tasks.
+Convert a long-term plan into 2-3 SMALL, actionable tasks for TODAY.
+
+RULES:
+- Tasks must be doable in 30-60 minutes
+- Be SPECIFIC (avoid vague wording)
+- DO NOT repeat plan steps directly
+- Focus on execution, not planning
+- Keep tasks realistic for a beginner
 
 Return ONLY JSON:
+
 {
   "tasks": [
     {
-      "title": string,
-      "description": string,
+      "title": "string",
+      "description": "string",
       "difficulty": number (1-5)
     }
   ]
@@ -127,70 +135,87 @@ export function buildTaskAdaptationPrompt({
   tasks,
   metrics,
   history,
-}: {
-  tasks: any[];
-  metrics: any;
-  history: any[];
-}): ChatCompletionMessageParam[] {
+}: any) {
   return [
-   {
-      role: "system",
+    {
+      role: "system" as const,
       content: `
-You are an adaptive personal coach.
+You are an intelligent AI personal coach.
 
-CRITICAL RULES:
+CRITICAL:
+- Return ONLY JSON
+- No explanation, no extra text
+- Output must start with { and end with }
 
-1. DO NOT create new tasks
-2. DO NOT remove tasks
-3. MODIFY existing tasks ONLY
-4. The number of updated_tasks MUST be exactly equal to input tasks
+CORE GOAL:
+Adapt today's tasks to maximize chances of completion while keeping them meaningful.
 
-ADAPTATION RULES:
+---
 
-- If completionRate > 0.8:
-  → increase intensity (more time, reps, depth)
-  → difficulty must be between 3–5
+TASK RULES:
+- Return EXACTLY the same number of tasks as input
+- Max 3 tasks
+- Tasks must be specific, actionable, and time-bound
+- Each task should take ~10–45 minutes (avoid trivial tasks under 5 minutes)
+- DO NOT repeat tasks from history
+- DO NOT rephrase the same task — change the approach if needed
 
-- If completionRate < 0.4:
-  → reduce effort (simpler, shorter)
-  → difficulty must be between 1–2
+---
 
-- Otherwise:
-  → keep moderate (2–3)
+BEHAVIOR RULES:
 
-Return ONLY JSON:
+1. FIRST-TIME USER (IMPORTANT)
+If tasks_done == 0:
+- DO NOT over-simplify
+- Keep tasks beginner-friendly but meaningful
+- Focus on "starting momentum", not trivial actions
 
+2. LOW COMPLETION (< 0.4 AND tasks_done > 0):
+- Reduce complexity slightly
+- Break tasks into smaller chunks
+- Change approach if tasks were skipped repeatedly
+
+3. HIGH COMPLETION (> 0.8):
+- Increase difficulty
+- Add depth or longer duration
+
+4. REPEATED SKIPS:
+- If similar tasks appear in history → CHANGE TYPE of task
+  (e.g. not just "watch" → switch to "do", "write", "try")
+
+---
+
+QUALITY RULES:
+- Avoid generic tasks like "think", "explore", "research"
+- Prefer action verbs: write, build, try, list, practice
+- Tasks should feel like real progress, not filler
+
+---
+
+FORMAT:
 {
   "updated_tasks": [
     {
-      "title": string,
-      "description": string,
+      "title": "string",
+      "description": "string",
       "difficulty": number (1-5)
     }
   ]
 }
-`,
+      `,
     },
     {
-      role: "user",
+      role: "user" as const,
       content: `
 Metrics:
-- completionRate: ${metrics.completionRate}
-- tasks_done: ${metrics.done}
-- tasks_skipped: ${metrics.skipped}
+${JSON.stringify(metrics)}
 
 Current Tasks:
 ${JSON.stringify(tasks)}
 
-Recent History (latest 10 tasks, include skipped):
+Recent History:
 ${JSON.stringify(history)}
-
-Instructions:
-- Avoid returning tasks that are identical to recent history.
-- If a task has been skipped repeatedly, simplify the task or propose a different approach.
-- Keep task count same as current tasks.
-- Keep tasks actionable and varied.
-`,
+      `,
     },
   ];
 }
