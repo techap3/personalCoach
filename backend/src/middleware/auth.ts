@@ -1,20 +1,44 @@
 import { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
 
 export interface AuthRequest extends Request {
   token?: string;
+  user?: {
+    id: string;
+    email?: string;
+  };
 }
 
-export function authMiddleware(
+export const authMiddleware = (
   req: AuthRequest,
   res: Response,
   next: NextFunction
-) {
-  const token = req.headers.authorization?.split(" ")[1];
+) => {
+  const authHeader = req.headers.authorization;
 
-  if (!token) {
+  if (!authHeader) {
     return res.status(401).json({ error: "No token" });
   }
 
-  req.token = token;
-  next();
-}
+  const token = authHeader.split(" ")[1];
+
+  try {
+    const decoded: any = jwt.decode(token); // Supabase JWT
+
+    if (!decoded?.sub) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+
+    req.token = token;
+
+    // 🔥 THIS FIXES YOUR ERROR
+    req.user = {
+      id: decoded.sub,
+      email: decoded.email,
+    };
+
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: "Auth failed" });
+  }
+};

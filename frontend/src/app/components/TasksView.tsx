@@ -6,6 +6,7 @@ type Task = {
   description: string;
   difficulty: number;
   status?: string;
+  scheduled_date?: string;
 };
 
 export default function TasksView({
@@ -46,14 +47,15 @@ export default function TasksView({
     }
   };
 
-  // 🔥 Split tasks
-  const pendingTasks = tasks.filter((t) => t.status === "pending");
-  const completedTasks = tasks.filter((t) => t.status === "done");
+  const visibleTasks = tasks.filter((t) => t.status !== "archived");
+  const pendingTasks = visibleTasks.filter((t) => t.status === "pending");
+  const completedTasks = visibleTasks.filter((t) => t.status === "done");
+  const skippedTasks = visibleTasks.filter((t) => t.status === "skipped");
 
-  // 🔥 Progress
-  const total = tasks.length;
-  const done = completedTasks.length;
-  const progress = total > 0 ? Math.round((done / total) * 100) : 0;
+  const doneTasks = visibleTasks.filter((t) => t.status === "done").length;
+  const totalTasks = visibleTasks.length;
+  const progress = totalTasks === 0 ? 0 : doneTasks / totalTasks;
+  const progressPercent = Math.round(progress * 100);
 
   return (
     <div className="max-w-2xl mx-auto mt-10">
@@ -64,14 +66,14 @@ export default function TasksView({
         <div className="flex justify-between text-sm mb-1">
           <span>Progress</span>
           <span>
-            {progress}% ({done}/{total})
+            {progressPercent}% ({doneTasks}/{totalTasks})
           </span>
         </div>
 
         <div className="w-full bg-gray-200 rounded h-2">
           <div
             className="bg-blue-600 h-2 rounded transition-all duration-300"
-            style={{ width: `${progress}%` }}
+            style={{ width: `${progressPercent}%` }}
           />
         </div>
       </div>
@@ -126,6 +128,27 @@ export default function TasksView({
             >
               <h3 className="font-semibold line-through">{task.title}</h3>
               <p className="text-sm text-gray-500">{task.description}</p>
+            </div>
+          ))}
+        </>
+      )}
+
+      {skippedTasks.length > 0 && (
+        <>
+          <h3 className="text-md font-semibold mt-6 mb-2 text-gray-400">
+            Skipped Tasks
+          </h3>
+
+          {skippedTasks.map((task) => (
+            <div
+              key={task.id}
+              className="mb-2 rounded border border-dashed border-gray-200 bg-gray-50 p-3 opacity-60 dark:border-gray-700 dark:bg-gray-900"
+            >
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
+                Skipped
+              </div>
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">{task.title}</h3>
+              <p className="text-xs text-gray-500 dark:text-gray-400">{task.description}</p>
             </div>
           ))}
         </>
