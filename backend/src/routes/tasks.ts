@@ -12,6 +12,35 @@ import {
 const router = Router();
 
 /* =========================
+   DATE UTILS (SINGLE SOURCE)
+========================= */
+
+// Always LOCAL date (no timezone bugs)
+const getLocalDateString = () => {
+  const now = new Date();
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  )
+    .toISOString()
+    .split("T")[0];
+};
+
+const getYesterdayDateString = () => {
+  const now = new Date();
+  const yesterday = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() - 1
+  );
+
+  return yesterday.toISOString().split("T")[0];
+};
+
+const getNowISOString = () => new Date().toISOString();
+
+/* =========================
    GENERATE TASKS
 ========================= */
 router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
@@ -40,7 +69,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
 
   const tasks = await generateTasks(plan.plan_json);
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = getLocalDateString();
 
   const toInsert = tasks.map((t: any) => ({
     ...t,
@@ -48,6 +77,8 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     status: "pending",
     scheduled_date: today,
   }));
+
+  console.log("🧪 INSERTING TASKS:", toInsert);
 
   await supabase.from("tasks").insert(toInsert);
 
@@ -66,9 +97,8 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
 
   const supabase = getSupabaseClient(req.token!);
 
-  // Prepare update data with timestamps
   let updateData: any = { status };
-  const now = new Date().toISOString();
+  const now = getNowISOString();
 
   if (status === "done") {
     updateData.completed_at = now;
@@ -94,32 +124,23 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
 });
 
 /* =========================
-   FETCH TASKS
+   FETCH TASKS (FIXED)
 ========================= */
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id, status } = req.query;
 
   console.log("👉 FETCH goal_id:", goal_id);
+
   const supabase = getSupabaseClient(req.token!);
-  const now = new Date();
 
-    // ✅ force LOCAL date instead of UTC
-    const today = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
-    )
-    .toISOString()
-    .split("T")[0];
-
-    console.log("🗓 Local today:", today);
-
+  // ❌ NO DATE FILTER → use latest tasks instead
   let query = supabase
     .from("tasks")
     .select("*")
     .eq("goal_id", goal_id)
-    .or(`scheduled_date.eq.${today},scheduled_date.is.null`)
-    .neq("status", "archived");
+    .neq("status", "archived")
+    .order("created_at", { ascending: false })
+    .limit(10);
 
   if (status) {
     query = query.eq("status", status as string);
@@ -130,8 +151,12 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   if (error) return res.status(500).json(error);
 
   console.log(
-    `[GET /tasks] goal=${goal_id} today=${today} returned=${data?.length} tasks`,
-    data?.map((t: any) => ({ id: t.id, scheduled_date: t.scheduled_date, status: t.status }))
+    `[GET /tasks] goal=${goal_id} returned=${data?.length} tasks`,
+    data?.map((t: any) => ({
+      id: t.id,
+      scheduled_date: t.scheduled_date,
+      status: t.status,
+    }))
   );
 
   res.json(data);
@@ -157,13 +182,11 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
 
   const metrics = computeMetrics(tasks);
 
-  // 🔥 UPDATE MEMORY FIRST
   await updateUserMemory(req.token!, userId, {
     ...metrics,
     total: tasks.length,
   });
 
-  // 🔥 FETCH MEMORY
   const memory = await getUserMemory(req.token!, userId);
 
   const pendingTasks = tasks.filter((t) => t.status === "pending");
@@ -185,19 +208,17 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       tasks: pendingTasks,
       metrics,
       history,
-      memory, // 🔥 KEY ADDITION
+      memory,
     });
 
     let adapted = aiResult.updated_tasks;
 
-    // 🔥 HARD CONTROL
     adapted = adapted.slice(0, pendingTasks.length);
 
     while (adapted.length < pendingTasks.length) {
       adapted.push(pendingTasks[adapted.length]);
     }
 
-    // 🔥 ARCHIVE OLD
     const ids = pendingTasks.map((t) => t.id);
 
     await supabase
@@ -205,8 +226,7 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       .update({ status: "archived" })
       .in("id", ids);
 
-    // 🔥 INSERT NEW
-    const today = new Date().toISOString().split("T")[0];
+    const today = getLocalDateString();
 
     const newTasks = adapted.map((t: any) => ({
       goal_id,
@@ -231,19 +251,17 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
   }
 });
 
+/* =========================
+   SUMMARY
+========================= */
 router.get("/summary", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id } = req.query;
 
   const supabase = getSupabaseClient(req.token!);
 
-  const today = new Date();
-  const todayStr = today.toISOString().split("T")[0];
+  const todayStr = getLocalDateString();
+  const yesterdayStr = getYesterdayDateString();
 
-  const yesterday = new Date();
-  yesterday.setDate(today.getDate() - 1);
-  const yesterdayStr = yesterday.toISOString().split("T")[0];
-
-  // 📊 Yesterday stats
   const { data: yesterdayTasks } = await supabase
     .from("tasks")
     .select("*")
@@ -253,7 +271,6 @@ router.get("/summary", authMiddleware, async (req: AuthRequest, res) => {
   const total = yesterdayTasks?.length || 0;
   const done = yesterdayTasks?.filter((t) => t.status === "done").length || 0;
 
-  // 📅 Today tasks
   const { data: todayTasks } = await supabase
     .from("tasks")
     .select("*")
@@ -280,17 +297,19 @@ router.get("/all", authMiddleware, async (req: AuthRequest, res) => {
 
   const { data, error } = await supabase
     .from("tasks")
-    .select("id, goal_id, status, completed_at, skipped_at, created_at, scheduled_date, goals!inner(user_id)")
+    .select(
+      "id, goal_id, status, completed_at, skipped_at, created_at, scheduled_date, goals!inner(user_id)"
+    )
     .eq("goals.user_id", userId)
     .order("created_at", { ascending: false });
 
   if (error) return res.status(500).json(error);
 
-  // Remove nested goals from response, return only tasks
-  const tasks = data?.map(task => {
-    const { goals, ...taskOnly } = task;
-    return taskOnly;
-  }) || [];
+  const tasks =
+    data?.map((task) => {
+      const { goals, ...taskOnly } = task;
+      return taskOnly;
+    }) || [];
 
   console.log(`📊 FETCH ALL TASKS: count=${tasks.length}`);
 
