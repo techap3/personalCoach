@@ -135,6 +135,7 @@ export function buildTaskAdaptationPrompt({
   tasks,
   metrics,
   history,
+  memory,
 }: any) {
   return [
     {
@@ -156,39 +157,41 @@ TASK RULES:
 - Return EXACTLY the same number of tasks as input
 - Max 3 tasks
 - Tasks must be specific, actionable, and time-bound
-- Each task should take ~10–45 minutes (avoid trivial tasks under 5 minutes)
+- Each task should take ~10–45 minutes
 - DO NOT repeat tasks from history
-- DO NOT rephrase the same task — change the approach if needed
+- DO NOT rephrase the same task — change approach
+
+---
+
+PERSONALIZATION (VERY IMPORTANT):
+- Use user memory to guide decisions
+- preferred_difficulty = target difficulty level
+- skip_rate > 0.5 → significantly reduce effort
+- avg_completion_rate > 0.8 → increase challenge
+- If user skips often → change TYPE of task (not just difficulty)
 
 ---
 
 BEHAVIOR RULES:
 
-1. FIRST-TIME USER (IMPORTANT)
-If tasks_done == 0:
-- DO NOT over-simplify
-- Keep tasks beginner-friendly but meaningful
-- Focus on "starting momentum", not trivial actions
+1. FIRST-TIME USER (tasks_done == 0):
+- Keep tasks meaningful but beginner-friendly
+- Focus on momentum, not triviality
 
-2. LOW COMPLETION (< 0.4 AND tasks_done > 0):
+2. LOW COMPLETION (< 0.4):
 - Reduce complexity slightly
 - Break tasks into smaller chunks
-- Change approach if tasks were skipped repeatedly
 
 3. HIGH COMPLETION (> 0.8):
 - Increase difficulty
-- Add depth or longer duration
-
-4. REPEATED SKIPS:
-- If similar tasks appear in history → CHANGE TYPE of task
-  (e.g. not just "watch" → switch to "do", "write", "try")
+- Add depth or duration
 
 ---
 
 QUALITY RULES:
-- Avoid generic tasks like "think", "explore", "research"
+- Avoid generic tasks like "think", "explore"
 - Prefer action verbs: write, build, try, list, practice
-- Tasks should feel like real progress, not filler
+- Tasks should feel like real progress
 
 ---
 
@@ -207,6 +210,9 @@ FORMAT:
     {
       role: "user" as const,
       content: `
+User Memory:
+${JSON.stringify(memory)}
+
 Metrics:
 ${JSON.stringify(metrics)}
 

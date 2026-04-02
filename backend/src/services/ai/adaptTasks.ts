@@ -10,6 +10,7 @@ export async function generateAdaptedTasks(input: {
     skipped: number;
   };
   history: any[];
+  memory?: any; 
 }) {
   const client = getAIClient();
 
