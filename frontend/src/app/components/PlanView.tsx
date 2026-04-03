@@ -7,18 +7,24 @@ type TaskWithPlanStep = {
   status?: string;
   plan_step_id?: string | number;
 };
+type PlanStep = {
+  id: string;
+  step_index: number;
+  status: string;
+};
 
 interface PlanViewProps {
   plan: PlanResponse | null;
   tasks: TaskWithPlanStep[];
+  planSteps: PlanStep[];
 }
 
-export default function PlanView({ plan, tasks }: PlanViewProps) {
+export default function PlanView({ plan, tasks, planSteps }: PlanViewProps) {
   if (!plan) return null;
 
-  const getStepStatus = (doneCount: number, totalCount: number) => {
-    if (totalCount > 0 && doneCount === totalCount) return "completed";
-    if (doneCount > 0) return "in-progress";
+  const getStepStatus = (dbStatus?: string) => {
+    if (dbStatus === "completed") return "completed";
+    if (dbStatus === "active") return "in-progress";
     return "pending";
   };
 
@@ -34,21 +40,16 @@ export default function PlanView({ plan, tasks }: PlanViewProps) {
     return "bg-gray-100 text-gray-700 border-gray-200";
   };
 
-  // ✅ ACTIVE STEP LOGIC (0-based)
-  const activeStepIndex = (() => {
-    for (let i = 0; i < plan.plan.length; i++) {
-      const stepTasks = tasks.filter(
-        (t) => Number(t.plan_step_id) === i
-      );
+  const getStepTaskMatches = (index: number) => {
+    const stepId = planSteps[index]?.id;
+    const stepTasks = tasks.filter(
+      (task) => String(task.plan_step_id) === String(stepId)
+    );
 
-      const done = stepTasks.filter((t) => t.status === "done").length;
+    return stepTasks;
+  };
 
-      if (stepTasks.length === 0 || done < stepTasks.length) {
-        return i;
-      }
-    }
-    return 0;
-  })();
+  const activeStepIndex = planSteps.findIndex((step) => step.status === "active");
 
   return (
     <div className="max-w-2xl mx-auto mt-6">
@@ -56,9 +57,7 @@ export default function PlanView({ plan, tasks }: PlanViewProps) {
 
       <div className="flex flex-col gap-4">
         {plan.plan.map((step, index) => {
-          const stepTasks = tasks.filter(
-            (task) => Number(task.plan_step_id) === index
-          );
+          const stepTasks = getStepTaskMatches(index);
 
           const doneCount = stepTasks.filter(
             (task) => task.status === "done"
@@ -66,13 +65,13 @@ export default function PlanView({ plan, tasks }: PlanViewProps) {
 
           const totalCount = stepTasks.length;
 
-          const status = getStepStatus(doneCount, totalCount);
+          const status = getStepStatus(planSteps[index]?.status);
 
           return (
             <div
               key={index}
               className={`border p-4 rounded shadow-sm transition ${
-                index === activeStepIndex
+                index === (activeStepIndex === -1 ? 0 : activeStepIndex)
                   ? "border-blue-500 bg-blue-50"
                   : ""
               }`}
@@ -83,7 +82,7 @@ export default function PlanView({ plan, tasks }: PlanViewProps) {
                     {index + 1}. {step.title}
                   </h3>
 
-                  {index === activeStepIndex && (
+                  {index === (activeStepIndex === -1 ? 0 : activeStepIndex) && (
                     <span className="text-xs text-blue-600 font-medium">
                       Current Step
                     </span>

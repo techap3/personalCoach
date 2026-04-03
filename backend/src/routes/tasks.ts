@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { getSupabaseClient } from "../db/supabase";
-import { generateTasks } from "../services/ai/taskGenerator";
+import { generateTasksForStep } from "../services/ai/taskGenerator";
 import { generateAdaptedTasks } from "../services/ai/adaptTasks";
 import { computeMetrics } from "../services/metrics";
 import {
@@ -10,6 +10,20 @@ import {
 } from "../services/memory/userMemory";
 
 const router = Router();
+
+/* =========================
+   HELPERS
+========================= */
+
+async function getActiveStep(supabase: any, goal_id: string) {
+  const { data } = await supabase
+    .from("plan_steps")
+    .select("*")
+    .eq("goal_id", goal_id)
+    .order("step_index", { ascending: true });
+
+  return data?.find((s: any) => s.status !== "completed") ?? null;
+}
 
 /* =========================
    DATE UTILS (SINGLE SOURCE)
@@ -41,22 +55,20 @@ const getYesterdayDateString = () => {
 const getNowISOString = () => new Date().toISOString();
 
 /* =========================
-   GENERATE TASKS
+   GENERATE TASKS (SESSION-BASED)
 ========================= */
 router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id } = req.body;
   const supabase = getSupabaseClient(req.token!);
+  const today = getLocalDateString();
 
-  const { data: existing } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("goal_id", goal_id)
-    .eq("status", "pending");
-
-  if (existing?.length) {
-    return res.json({ tasks: existing });
+  // 1. Get the active plan step
+  const activeStep = await getActiveStep(supabase, goal_id);
+  if (!activeStep) {
+    return res.status(400).json({ error: "No active step. Plan may be complete." });
   }
 
+  // 2. Get the plan record (need plan.id for session)
   const { data: plan } = await supabase
     .from("plans")
     .select("*")
@@ -67,35 +79,120 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "No plan found" });
   }
 
-  const rawTasks = await generateTasks(plan.plan_json);
-  const stepCount = Array.isArray(plan?.plan_json?.plan)
-    ? plan.plan_json.plan.length
-    : 0;
+  // 3. Fetch latest session today (supports multiple sessions/day)
+  const { data: todaySessions } = await supabase
+    .from("task_sessions")
+    .select("*")
+    .eq("goal_id", goal_id)
+    .eq("session_date", today)
+    .order("created_at", { ascending: false })
+    .limit(1);
 
-  const tasks = rawTasks.map((task: any, index: number) => ({
-    ...task,
-    plan_step_id: Number(
-      stepCount > 0
-        ? index % stepCount
-        : task.plan_step_id ?? index
-    ),
-  }));
+  const existingSession = todaySessions?.[0] ?? null;
 
-  const today = getLocalDateString();
 
-  const toInsert = tasks.map((t: any) => ({
-    ...t,
-    plan_step_id: Number(t.plan_step_id),
+  if (existingSession?.status === "active") {
+    const { data: sessionTasks } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("session_id", existingSession.id)
+      .neq("status", "archived");
+
+    const activeSessionTasks = sessionTasks || [];
+    const allResolved =
+      activeSessionTasks.length > 0 &&
+      activeSessionTasks.every(
+        (t: any) => t.status === "done" || t.status === "skipped"
+      );
+
+
+    if (allResolved) {
+      await supabase
+        .from("task_sessions")
+        .update({ status: "completed" })
+        .eq("id", existingSession.id);
+
+    } else {
+      return res.json({ tasks: activeSessionTasks });
+    }
+
+  }
+
+  // 4. No active session found (or latest is completed) → create a new session.
+  // If DB still has unique(goal_id, session_date), fallback to reusing today's completed session.
+  let session: any = null;
+
+  const { data: createdSession, error: sessionError } = await supabase
+    .from("task_sessions")
+    .insert({
+      goal_id,
+      plan_id: plan.id,
+      plan_step_id: activeStep.id,
+      session_date: today,
+      status: "active",
+    })
+    .select()
+    .single();
+
+  if (!sessionError) {
+    session = createdSession;
+  } else {
+    const isDuplicateTodaySession =
+      sessionError.message?.includes("task_sessions_goal_id_session_date_key") ||
+      sessionError.code === "23505";
+
+    if (isDuplicateTodaySession && existingSession) {
+      // With unique(goal_id, session_date), reuse same row but clear old tasks
+      // so fetches don't keep returning previously resolved items.
+      await supabase
+        .from("tasks")
+        .update({ status: "archived" })
+        .eq("session_id", existingSession.id)
+        .neq("status", "archived");
+
+      const { data: reopenedSession, error: reopenError } = await supabase
+        .from("task_sessions")
+        .update({
+          status: "active",
+          plan_id: plan.id,
+          plan_step_id: activeStep.id,
+        })
+        .eq("id", existingSession.id)
+        .select()
+        .single();
+
+      if (reopenError) {
+        return res.status(500).json({ error: reopenError.message });
+      }
+
+      session = reopenedSession;
+    } else {
+      return res.status(500).json({ error: sessionError.message });
+    }
+  }
+
+  // 5. Generate tasks scoped to this step only
+  const rawTasks = await generateTasksForStep(activeStep);
+
+  // 6. Insert with session_id and plan_step_id
+  const toInsert = rawTasks.map((t: any) => ({
     goal_id,
+    plan_step_id: activeStep.id,
+    session_id: session.id,
+    title: t.title,
+    description: t.description,
+    difficulty: t.difficulty,
     status: "pending",
     scheduled_date: today,
   }));
 
-  console.log("🧪 INSERTING TASKS:", toInsert);
 
-  await supabase.from("tasks").insert(toInsert);
+  const { data: insertedTasks } = await supabase
+    .from("tasks")
+    .insert(toInsert)
+    .select();
 
-  return res.json({ tasks: toInsert });
+  return res.json({ tasks: insertedTasks || [] });
 });
 
 /* =========================
@@ -133,86 +230,312 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(500).json({ error: error.message });
   }
 
+  // === STEP COMPLETION CHECK (ALL STEP TASKS) ===
+  const { data: task } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("id", task_id)
+    .single();
+
+  if (task?.plan_step_id) {
+
+    // Mark session completed once all non-archived tasks in that session are resolved.
+    if (task.session_id) {
+      const { data: sessionTasks } = await supabase
+        .from("tasks")
+        .select("id, status")
+        .eq("session_id", task.session_id)
+        .neq("status", "archived");
+
+      const sessionTotal = sessionTasks?.length ?? 0;
+      const sessionResolved =
+        sessionTasks?.filter((t: any) => t.status === "done" || t.status === "skipped")
+          .length ?? 0;
+
+
+      if (sessionTotal > 0 && sessionResolved === sessionTotal) {
+        await supabase
+          .from("task_sessions")
+          .update({ status: "completed" })
+          .eq("id", task.session_id);
+
+      }
+    }
+
+    const { data: stepTasks } = await supabase
+      .from("tasks")
+      .select("id, status, plan_step_id")
+      .eq("plan_step_id", task.plan_step_id)
+      .neq("status", "archived");
+
+
+    const total = stepTasks?.length ?? 0;
+
+    const resolved =
+      stepTasks?.filter((t: any) => t.status === "done" || t.status === "skipped")
+        .length ?? 0;
+
+
+    if (total > 0 && resolved === total) {
+
+      await supabase
+        .from("plan_steps")
+        .update({ status: "completed" })
+        .eq("id", task.plan_step_id);
+
+      const { data: updatedStep } = await supabase
+        .from("plan_steps")
+        .select("*")
+        .eq("id", task.plan_step_id)
+        .single();
+
+
+      if (updatedStep) {
+        const { data: nextStep } = await supabase
+          .from("plan_steps")
+          .select("*")
+          .eq("goal_id", task.goal_id)
+          .gt("step_index", updatedStep.step_index)
+          .order("step_index", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (nextStep) {
+          await supabase
+            .from("plan_steps")
+            .update({ status: "active" })
+            .eq("id", nextStep.id);
+
+        }
+      }
+    }
+  }
+
   res.json({ success: true });
 });
 
 /* =========================
-   FETCH TASKS (FIXED)
+   FETCH TASKS (SESSION-BASED)
 ========================= */
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
-  const { goal_id, status } = req.query;
+  const { goal_id, status, all } = req.query;
 
-  console.log("👉 FETCH goal_id:", goal_id);
 
   const supabase = getSupabaseClient(req.token!);
 
-  // ❌ NO DATE FILTER → use latest tasks instead
+  // If ?all=true, return ALL tasks for goal regardless of session/date
+  if (all === "true") {
+    let query = supabase
+      .from("tasks")
+      .select("*")
+      .eq("goal_id", goal_id as string)
+      .neq("status", "archived");
+
+    if (status) {
+      query = query.eq("status", status as string);
+    }
+
+    const { data, error } = await query;
+    if (error) return res.status(500).json(error);
+
+    return res.json(data);
+  }
+
+  const today = getLocalDateString();
+
+  // Fetch latest session for today (any status)
+  const { data: sessions } = await supabase
+    .from("task_sessions")
+    .select("*")
+    .eq("goal_id", goal_id)
+    .eq("session_date", today)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  const session = sessions?.[0] ?? null;
+
+
+  if (!session || session.status === "completed") {
+    if (session?.status === "completed") {
+    }
+
+    const activeStep = await getActiveStep(supabase, goal_id as string);
+    if (!activeStep) {
+      return res.json([]);
+    }
+
+    const { data: plan } = await supabase
+      .from("plans")
+      .select("*")
+      .eq("goal_id", goal_id)
+      .maybeSingle();
+
+    if (!plan) {
+      return res.status(400).json({ error: "No plan found" });
+    }
+
+    let newSession: any = null;
+
+    const { data: createdSession, error: createSessionError } = await supabase
+      .from("task_sessions")
+      .insert({
+        goal_id,
+        plan_id: plan.id,
+        plan_step_id: activeStep.id,
+        session_date: today,
+        status: "active",
+      })
+      .select()
+      .single();
+
+    if (!createSessionError) {
+      newSession = createdSession;
+    } else {
+      const isDuplicateTodaySession =
+        createSessionError.message?.includes("task_sessions_goal_id_session_date_key") ||
+        createSessionError.code === "23505";
+
+      if (isDuplicateTodaySession) {
+        // Fallback while unique(goal_id, session_date) still exists in DB.
+        // Reopen latest session and attach new tasks to keep flow actionable.
+        const { data: latestSessions } = await supabase
+          .from("task_sessions")
+          .select("*")
+          .eq("goal_id", goal_id)
+          .eq("session_date", today)
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        const latestSession = latestSessions?.[0] ?? session;
+
+        if (!latestSession) {
+          return res.status(500).json({ error: createSessionError.message });
+        }
+
+        const { data: reopenedSession, error: reopenError } = await supabase
+          .from("task_sessions")
+          .update({
+            status: "active",
+            plan_id: plan.id,
+            plan_step_id: activeStep.id,
+          })
+          .eq("id", latestSession.id)
+          .select()
+          .single();
+
+        if (reopenError) {
+          return res.status(500).json({ error: reopenError.message });
+        }
+
+        newSession = reopenedSession;
+      } else {
+        return res.status(500).json({ error: createSessionError.message });
+      }
+    }
+
+    const rawTasks = await generateTasksForStep(activeStep);
+
+    const toInsert = rawTasks.map((t: any) => ({
+      goal_id,
+      plan_step_id: activeStep.id,
+      session_id: newSession.id,
+      title: t.title,
+      description: t.description,
+      difficulty: t.difficulty,
+      status: "pending",
+      scheduled_date: today,
+    }));
+
+    const { data: insertedTasks, error: insertError } = await supabase
+      .from("tasks")
+      .insert(toInsert)
+      .select();
+
+    if (insertError) {
+      return res.status(500).json({ error: insertError.message });
+    }
+
+    if (status) {
+      return res.json((insertedTasks || []).filter((task: any) => task.status === status));
+    }
+
+    return res.json(insertedTasks || []);
+  }
+
+  // session.status is active here
   let query = supabase
     .from("tasks")
     .select("*")
-    .eq("goal_id", goal_id)
-    .neq("status", "archived")
-    .order("created_at", { ascending: false })
-    .limit(10);
+    .eq("session_id", session.id)
+    .neq("status", "archived");
 
   if (status) {
     query = query.eq("status", status as string);
   }
 
   const { data, error } = await query;
-
   if (error) return res.status(500).json(error);
-
-  console.log(
-    `[GET /tasks] goal=${goal_id} returned=${data?.length} tasks`,
-    data?.map((t: any) => ({
-      id: t.id,
-      scheduled_date: t.scheduled_date,
-      status: t.status,
-    }))
-  );
 
   res.json(data);
 });
 
 /* =========================
-   ADAPT TASKS (WITH MEMORY)
+   ADAPT TASKS (SESSION-SCOPED)
 ========================= */
 router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id } = req.body;
   const userId = req.user.id;
+  const today = getLocalDateString();
 
   const supabase = getSupabaseClient(req.token!);
 
-  const { data: tasks } = await supabase
+  // 1. Get latest active session for today
+  const { data: sessions } = await supabase
+    .from("task_sessions")
+    .select("*")
+    .eq("goal_id", goal_id)
+    .eq("session_date", today)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  const session = sessions?.[0] ?? null;
+
+  if (!session) {
+    return res.status(400).json({ error: "No active session for today" });
+  }
+
+  // 2. Get pending tasks from this session only
+  const { data: sessionTasks } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("session_id", session.id);
+
+  const pendingTasks = sessionTasks?.filter((t) => t.status === "pending") || [];
+
+  if (!pendingTasks.length) {
+    return res.status(400).json({ error: "No pending tasks in current session" });
+  }
+
+  // Memory/metrics use all goal tasks for context
+  const { data: allGoalTasks } = await supabase
     .from("tasks")
     .select("*")
     .eq("goal_id", goal_id);
 
-  if (!tasks?.length) {
-    return res.status(400).json({ error: "No tasks found" });
-  }
-
-  const metrics = computeMetrics(tasks);
+  const metrics = computeMetrics(allGoalTasks || []);
 
   await updateUserMemory(req.token!, userId, {
     ...metrics,
-    total: tasks.length,
+    total: (allGoalTasks || []).length,
   });
 
   const memory = await getUserMemory(req.token!, userId);
 
-  const pendingTasks = tasks.filter((t) => t.status === "pending");
-
-  if (!pendingTasks.length) {
-    return res.status(400).json({ error: "No pending tasks" });
-  }
-
-  const history = tasks
+  const history = (allGoalTasks || [])
     .sort(
       (a: any, b: any) =>
-        new Date(b.created_at).getTime() -
-        new Date(a.created_at).getTime()
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     )
     .slice(0, 10);
 
@@ -225,24 +548,40 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
     });
 
     let adapted = aiResult.updated_tasks;
-
     adapted = adapted.slice(0, pendingTasks.length);
-
     while (adapted.length < pendingTasks.length) {
       adapted.push(pendingTasks[adapted.length]);
     }
 
-    const ids = pendingTasks.map((t) => t.id);
-
+    // 3. Archive pending tasks from current session
+    const pendingIds = pendingTasks.map((t) => t.id);
     await supabase
       .from("tasks")
       .update({ status: "archived" })
-      .in("id", ids);
+      .in("id", pendingIds);
 
-    const today = getLocalDateString();
+    // 4. Create a new session for the same step + same day
+    const { data: newSession, error: sessionError } = await supabase
+      .from("task_sessions")
+      .insert({
+        goal_id,
+        plan_id: session.plan_id,
+        plan_step_id: session.plan_step_id,
+        session_date: today,
+        status: "active",
+      })
+      .select()
+      .single();
 
+    if (sessionError) {
+      return res.status(500).json({ error: sessionError.message });
+    }
+
+    // 5. Insert adapted tasks under the new session
     const newTasks = adapted.map((t: any) => ({
       goal_id,
+      session_id: newSession.id,
+      plan_step_id: session.plan_step_id,
       title: t.title,
       description: t.description,
       difficulty: t.difficulty,
@@ -323,8 +662,6 @@ router.get("/all", authMiddleware, async (req: AuthRequest, res) => {
       const { goals, ...taskOnly } = task;
       return taskOnly;
     }) || [];
-
-  console.log(`📊 FETCH ALL TASKS: count=${tasks.length}`);
 
   res.json(tasks);
 });

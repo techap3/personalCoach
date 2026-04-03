@@ -28,12 +28,8 @@ export async function generateAdaptedTasks(input: {
 
   const raw = response.choices[0]?.message?.content || "";
 
-  console.log("🧠 Task Adapt RAW:", raw);
-
   // 🔥 ROBUST JSON EXTRACTION
   const parsed = extractJSON(raw);
-
-  console.log("✅ Parsed JSON:", parsed);
 
   return parsed;
 }

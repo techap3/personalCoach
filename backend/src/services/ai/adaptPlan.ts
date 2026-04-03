@@ -20,7 +20,5 @@ export async function generateAdaptedPlan(input: AdaptationInput) {
 
   const raw = response.choices[0]?.message?.content || "";
 
-  console.log("🧠 Adapt RAW:", raw);
-
   return raw;
 }

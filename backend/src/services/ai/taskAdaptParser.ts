@@ -87,8 +87,6 @@ export function parseAdaptedTasks(
   originalTasks: any[],
   metrics: any
 ) {
-  console.log("🧠 RAW INPUT:", raw);
-
   try {
     const jsonStr = extractJSON(raw);
 

@@ -7,5 +7,6 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "strict": false
-  }
+  },
+  "exclude": ["tests", "**/*.test.ts", "vitest.config.ts"]
 }
