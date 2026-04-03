@@ -18,6 +18,7 @@ type Task = {
   description: string;
   difficulty: number;
   status?: string;
+  plan_step_id?: number; // ✅ ADD THIS
 };
 
 type AllTask = {
@@ -50,6 +51,8 @@ export default function Home() {
   const [goalId, setGoalId] = useState<string | null>(null);
   const [view, setView] = useState<"HOME" | "CREATE_GOAL" | "PLAN" | "TASKS">("HOME");
   const [showAllGoals, setShowAllGoals] = useState(false);
+  const [showTodayTasks, setShowTodayTasks] = useState(false);
+  const [activeStepIndex, setActiveStepIndex] = useState(0);
 
   const [adapting, setAdapting] = useState(false);
   const [adaptError, setAdaptError] = useState<string | null>(null);
@@ -118,12 +121,12 @@ export default function Home() {
   /* =========================
      FETCH TASKS (ALL STATES)
   ========================= */
-  const fetchTasks = useCallback(async (goalId: string) => {
+  const fetchTasks = useCallback(async (goalId: string): Promise<Task[]> => {
     const apiBaseUrl = getApiBaseUrl();
 
     console.log("👉 FETCH goal_id:", goalId);
 
-    if (!apiBaseUrl || !token) return;
+    if (!apiBaseUrl || !token) return [] as Task[];
 
     console.log("📡 Fetching ALL tasks...");
 
@@ -138,13 +141,27 @@ export default function Home() {
 
       console.log("📋 RAW TASK RESPONSE:", data);
 
-      const normalized = Array.isArray(data) ? data : data.tasks || [];
+      const normalizedTasks: Task[] = (Array.isArray(data) ? data : data.tasks || []).map((task: Task) => ({
+        ...task,
+        plan_step_id: Number(task.plan_step_id),
+      }));
 
-      console.log("✅ NORMALIZED TASKS:", normalized);
+      console.log("✅ NORMALIZED TASKS:", normalizedTasks);
+      console.log(
+        "✅ TASK SHAPE CHECK:",
+        normalizedTasks.map((task: Task) => ({
+          id: task.id,
+          title: task.title,
+          status: task.status,
+          plan_step_id: task.plan_step_id,
+        }))
+      );
 
-      setTasks(normalized);
+      setTasks(normalizedTasks);
+      return normalizedTasks;
     } catch (err) {
       console.error("❌ Fetch tasks error:", err);
+      return [] as Task[];
     }
   }, [getApiBaseUrl, token]);
 
@@ -281,7 +298,21 @@ export default function Home() {
       }
 
       await res.json();
-      await fetchTasks(goalId);
+      const normalizedTasks = await fetchTasks(goalId);
+
+      const firstPendingStep = plan?.plan?.findIndex((_, index) => {
+        const stepTasks = normalizedTasks.filter(
+          (task) => Number(task.plan_step_id) === index
+        );
+
+        return stepTasks.some((task) => task.status === "pending");
+      });
+
+      if (firstPendingStep !== undefined && firstPendingStep !== -1) {
+        setActiveStepIndex(firstPendingStep);
+      }
+
+      setShowTodayTasks(true);
       await fetchAllTasks();
       setView("TASKS");
     } catch (err) {
@@ -291,6 +322,8 @@ export default function Home() {
 
   const handleGoalSelect = async (goal: Goal) => {
     setGoalId(goal.id);
+    setActiveStepIndex(0);
+    setShowTodayTasks(false);
     setView("TASKS");
   };
 
@@ -326,6 +359,19 @@ export default function Home() {
   const visibleRemainingGoals = showAllGoals
     ? remainingGoals
     : remainingGoals.slice(0, 3);
+
+  const derivedActiveStep = plan?.plan?.findIndex((_, index) => {
+    const stepTasks = tasks.filter(
+      (task) => Number(task.plan_step_id) === index
+    );
+
+    return stepTasks.some((task) => task.status === "pending");
+  });
+
+  const finalActiveStep =
+    derivedActiveStep !== -1 && derivedActiveStep !== undefined
+      ? derivedActiveStep
+      : activeStepIndex;
 
   const renderHeader = () => (
     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5 shadow-sm text-gray-900 dark:text-gray-100">
@@ -520,6 +566,22 @@ export default function Home() {
 
           <button
             onClick={() => {
+              setShowTodayTasks(true);
+
+              if (plan?.plan?.length) {
+                const firstPendingStep = plan.plan.findIndex((_, index) => {
+                  const stepTasks = tasks.filter(
+                    (task) => Number(task.plan_step_id) === index
+                  );
+
+                  return stepTasks.some((task) => task.status === "pending");
+                });
+
+                if (firstPendingStep !== -1) {
+                  setActiveStepIndex(firstPendingStep);
+                }
+              }
+
               void generateTodaysTasks();
             }}
             className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
@@ -530,7 +592,7 @@ export default function Home() {
         </div>
 
         <div className="mt-6">
-          <PlanView plan={plan} />
+          <PlanView plan={plan} tasks={tasks} />
         </div>
       </div>
     </div>
@@ -549,15 +611,23 @@ export default function Home() {
         <div className="mt-6 space-y-3">
           {plan?.plan?.length ? (
             plan.plan.map((step, index) => (
-              <div
+              <button
                 key={`${step.title}-${index}`}
-                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                onClick={() => {
+                  setActiveStepIndex(index);
+                  setShowTodayTasks(false);
+                }}
+                className={`w-full text-left rounded-lg border px-3 py-3 text-sm text-gray-700 dark:text-gray-200 transition ${
+                  index === finalActiveStep
+                    ? "bg-blue-50 border-blue-500 dark:bg-blue-900/20 dark:border-blue-500"
+                    : "border-gray-200 bg-gray-50 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+                }`}
               >
                 <span className="mr-2 text-xs font-semibold text-blue-600 dark:text-blue-400">
                   {index + 1}
                 </span>
                 {step.title}
-              </div>
+              </button>
             ))
           ) : (
             <div className="rounded-lg border border-dashed border-gray-300 px-3 py-4 text-sm text-gray-600 dark:border-gray-600 dark:text-gray-300">
@@ -568,22 +638,58 @@ export default function Home() {
       </aside>
 
       <div className="min-w-0 flex-1 space-y-8">
-        {allTasks.length > 0 && (
+        {/* {allTasks.length > 0 && (
           <div className="bg-gradient-to-r from-blue-500 to-indigo-500 text-white rounded-xl p-5 shadow-md">
             <div className="mx-auto max-w-3xl">
               <DailySummary tasks={allTasks} />
             </div>
           </div>
-        )}
+        )} */}
 
         <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5 shadow-sm text-gray-900 dark:text-gray-100">
           {tasks.length > 0 ? (
             <>
-              <TasksView
-                tasks={tasks}
-                token={token!}
-                refreshTasks={() => goalId && fetchTasks(goalId)}
-              />
+              
+              {(() => {
+                if (!plan) return null;
+
+                const stepTasks = tasks.filter(
+                  (task) => Number(task.plan_step_id) === finalActiveStep
+                );
+
+                const tasksToRender = tasks;
+
+                console.log("TOTAL TASKS:", tasks.length);
+                console.log("STEP TASKS:", stepTasks.length);
+                console.log("ACTIVE STEP:", finalActiveStep);
+
+                return (
+                  <>
+                    {showTodayTasks && (
+                      <button
+                        onClick={() => setShowTodayTasks(false)}
+                        className="mb-4 text-sm text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        ← Back to Plan
+                      </button>
+                    )}
+
+                    <div className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                      DEBUG: {tasks.length} total / {stepTasks.length} filtered
+                    </div>
+
+                    <TasksView
+                      tasksToRender={tasksToRender}
+                      token={token!}
+                      refreshTasks={async () => {
+                        if (goalId) {
+                          await fetchTasks(goalId);
+                        }
+                      }}
+                    />
+                  </>
+                );
+              })()}
 
               {goalId && tasks.some((t) => t.status === "pending") && (
                 <div className="mt-6 text-center">
