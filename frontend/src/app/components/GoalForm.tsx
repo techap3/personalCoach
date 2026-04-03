@@ -134,7 +134,7 @@ export default function GoalForm({
         {loading ? "Generating..." : "Generate Plan"}
       </button>
 
-      {(goalId || localGoalId) && (
+      {/* {(goalId || localGoalId) && (
         <button
           className="bg-green-600 text-white p-2 rounded w-full"
           onClick={generateTasks}
@@ -142,7 +142,7 @@ export default function GoalForm({
         >
           {loading ? "Generating..." : "Generate Tasks (once)"}
         </button>
-      )}
+      )} */}
     </div>
   );
 }

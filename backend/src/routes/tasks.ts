@@ -67,12 +67,25 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "No plan found" });
   }
 
-  const tasks = await generateTasks(plan.plan_json);
+  const rawTasks = await generateTasks(plan.plan_json);
+  const stepCount = Array.isArray(plan?.plan_json?.plan)
+    ? plan.plan_json.plan.length
+    : 0;
+
+  const tasks = rawTasks.map((task: any, index: number) => ({
+    ...task,
+    plan_step_id: Number(
+      stepCount > 0
+        ? index % stepCount
+        : task.plan_step_id ?? index
+    ),
+  }));
 
   const today = getLocalDateString();
 
   const toInsert = tasks.map((t: any) => ({
     ...t,
+    plan_step_id: Number(t.plan_step_id),
     goal_id,
     status: "pending",
     scheduled_date: today,

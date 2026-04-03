@@ -1,10 +1,20 @@
 import { Router } from "express";
 import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { getSupabaseClient } from "../db/supabase";
-
 import { generateAdaptedTasks } from "../services/ai/adaptTasks";
 
 const router = Router();
+
+const getLocalDateString = () => {
+  const now = new Date();
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  )
+    .toISOString()
+    .split("T")[0];
+};
 
 router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id } = req.body;
@@ -37,7 +47,11 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
       completionRate,
     });
 
-    // 2. Call AI (ALREADY PARSED)
+    if (!pendingTasks.length) {
+      return res.status(400).json({ error: "No pending tasks" });
+    }
+
+    // 2. AI
     const aiResult = await generateAdaptedTasks({
       tasks: pendingTasks,
       metrics: {
@@ -48,28 +62,39 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
       history: tasks.slice(-10),
     });
 
-    console.log("🤖 AI RESULT:", aiResult);
-
-    // ❗ IMPORTANT: NO parseAdaptedPlan HERE
-
     if (!aiResult?.updated_tasks?.length) {
       throw new Error("AI returned empty tasks");
     }
 
-    // 3. Archive old pending tasks
+    let adapted = aiResult.updated_tasks;
+
+    // ensure same length
+    adapted = adapted.slice(0, pendingTasks.length);
+
+    while (adapted.length < pendingTasks.length) {
+      adapted.push(pendingTasks[adapted.length]);
+    }
+
+    // 3. Archive old
+    const ids = pendingTasks.map((t) => t.id);
+
     await supabase
       .from("tasks")
       .update({ status: "archived" })
-      .eq("goal_id", goal_id)
-      .eq("status", "pending");
+      .in("id", ids);
 
-    // 4. Insert new tasks
-    const newTasks = aiResult.updated_tasks.map((t: any) => ({
+    const today = getLocalDateString();
+
+    // 🔥 FIX: preserve plan_step_id
+    const newTasks = adapted.map((t: any, index: number) => ({
       goal_id,
       title: t.title,
       description: t.description,
       difficulty: t.difficulty,
       status: "pending",
+      scheduled_date: today,
+      plan_step_id:
+        pendingTasks[index]?.plan_step_id ?? index,
     }));
 
     const { data: inserted } = await supabase
@@ -77,7 +102,7 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
       .insert(newTasks)
       .select();
 
-    console.log("✅ Inserted tasks:", inserted);
+    console.log("✅ Inserted adapted tasks:", inserted);
 
     return res.json({
       metrics: { total, done, skipped, completionRate },
