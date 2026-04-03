@@ -1,5 +1,5 @@
 import { getAIClient } from "./provider";
-import { buildTaskPrompt } from "./prompts";
+import { buildTaskPrompt, buildStepTaskPrompt } from "./prompts";
 import { PlanResponse } from "./parser";
 
 type GeneratedTask = {
@@ -43,8 +43,6 @@ export async function generateTasks(plan: PlanResponse) {
 
   const raw = response.choices[0]?.message?.content || "";
 
-  console.log("🧠 TASK GEN RAW:", raw);
-
   // ✅ PARSE HERE (CRITICAL FIX)
   try {
     const jsonStart = raw.indexOf("{");
@@ -56,10 +54,6 @@ export async function generateTasks(plan: PlanResponse) {
     const parsedTasks = (parsed.tasks || []) as GeneratedTask[];
 
     const mappedTasks = mapTasksToPlanSteps(parsedTasks, plan);
-
-    console.log("✅ Parsed Tasks:", parsed);
-
-    console.log("✅ Mapped Tasks With plan_step_id:", mappedTasks);
 
     return mappedTasks;
   } catch (err) {
@@ -81,5 +75,48 @@ export async function generateTasks(plan: PlanResponse) {
     ],
     plan
     );
+  }
+}
+
+/* =========================
+   GENERATE TASKS FOR A SINGLE PLAN STEP
+   Used by the session-based progression engine.
+========================= */
+export async function generateTasksForStep(step: {
+  title: string;
+  description: string;
+  difficulty: number;
+}): Promise<GeneratedTask[]> {
+  const client = getAIClient();
+  const model = process.env.AI_MODEL || "meta-llama/llama-3-8b-instruct";
+
+  const response = await client.chat.completions.create({
+    model,
+    messages: buildStepTaskPrompt(step),
+  });
+
+  const raw = response.choices[0]?.message?.content || "";
+
+  try {
+    const jsonStart = raw.indexOf("{");
+    const jsonEnd = raw.lastIndexOf("}");
+    const clean = raw.slice(jsonStart, jsonEnd + 1);
+    const parsed = JSON.parse(clean);
+    const tasks = (parsed.tasks || []) as GeneratedTask[];
+    return tasks;
+  } catch (err) {
+    console.error("❌ Step task parse failed:", err);
+    return [
+      {
+        title: "Take one concrete action",
+        description: `Do one specific thing to make progress on: ${step.title}`,
+        difficulty: step.difficulty,
+      },
+      {
+        title: "Review and note progress",
+        description: "Write down what you did and what the next small action is",
+        difficulty: 1,
+      },
+    ];
   }
 }

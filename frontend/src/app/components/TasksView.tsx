@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 type Task = {
   id: string;
@@ -8,43 +8,58 @@ type Task = {
   description: string;
   difficulty: number;
   status?: string;
-  plan_step_id?: number;
+  plan_step_id?: string | number;
 };
 
 export default function TasksView({
   tasksToRender,
   token,
   refreshTasks,
+  refreshPlan,
 }: {
   tasksToRender: Task[];
   token: string;
   refreshTasks: () => void | Promise<void>;
+  refreshPlan?: () => void | Promise<void>;
 }) {
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+
+  const getTaskStyles = (status?: string) => {
+    if (status === "done") {
+      return "border-green-200 bg-green-50 text-green-800 dark:border-green-700 dark:bg-green-900/20 dark:text-green-200";
+    }
+
+    if (status === "skipped") {
+      return "border-yellow-200 bg-yellow-50 text-yellow-800 dark:border-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-200";
+    }
+
+    return "border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900";
+  };
 
   const visibleTasks = useMemo(
     () => tasksToRender.filter((task) => task.status !== "archived"),
     [tasksToRender]
   );
 
-  const pendingTasks = useMemo(
-    () => visibleTasks.filter((task) => task.status === "pending"),
-    [visibleTasks]
-  );
   const completedTasks = useMemo(
     () => visibleTasks.filter((task) => task.status === "done"),
     [visibleTasks]
   );
-  const skippedTasks = useMemo(
-    () => visibleTasks.filter((task) => task.status === "skipped"),
-    [visibleTasks]
-  );
 
-  console.log("RENDER SOURCE:", {
-    total: visibleTasks.length,
-    rendered: tasksToRender.length,
-    pending: pendingTasks.length,
-  });
+  const sortedTasks = useMemo(() => {
+    const order: Record<string, number> = {
+      pending: 0,
+      done: 1,
+      skipped: 2,
+    };
+
+    return [...visibleTasks].sort((a, b) => {
+      const aStatus = a.status || "pending";
+      const bStatus = b.status || "pending";
+      return (order[aStatus] ?? 99) - (order[bStatus] ?? 99);
+    });
+  }, [visibleTasks]);
 
   if (!tasksToRender || tasksToRender.length === 0) return null;
 
@@ -68,6 +83,9 @@ export default function TasksView({
       }
 
       await refreshTasks();
+      if (refreshPlan) {
+        await refreshPlan();
+      }
     } catch (err) {
       console.error("❌ Task update failed:", err);
     }
@@ -84,76 +102,65 @@ export default function TasksView({
         </p>
       </div>
 
-      {pendingTasks.length > 0 && (
-        <div className="space-y-3">
-          {pendingTasks.map((task) => (
-            <div
-              key={task.id}
-              className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900"
-            >
-              <p className="font-medium text-gray-900 dark:text-gray-100">{task.title}</p>
-              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">{task.description}</p>
+      <div className="space-y-3">
+        {sortedTasks.map((task) => (
+          <div
+            key={task.id}
+            className={`rounded-lg border p-4 transition cursor-pointer ${getTaskStyles(task.status)}`}
+            onClick={() => {
+              setExpandedTaskId((prev) => (prev === task.id ? null : task.id));
+            }}
+          >
+            <p className="text-xs font-medium uppercase mb-1">
+              {task.status === "done" && "Completed"}
+              {task.status === "skipped" && "Skipped"}
+              {(task.status === "pending" || !task.status) && "Pending"}
+            </p>
 
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <span className="text-xs text-gray-500 dark:text-gray-400">
+            <h3
+              className={`font-semibold text-gray-900 dark:text-gray-100 ${
+                task.status === "done" ? "line-through" : ""
+              }`}
+            >
+              {task.title}
+            </h3>
+
+            {expandedTaskId === task.id && (
+              <>
+                <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">{task.description}</p>
+
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
                   Difficulty: {task.difficulty}/5
-                </span>
+                </p>
 
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      void markTask(task.id, "done");
-                    }}
-                    className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
-                  >
-                    Done
-                  </button>
-                  <button
-                    onClick={() => {
-                      void markTask(task.id, "skipped");
-                    }}
-                    className="rounded-md bg-gray-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700"
-                  >
-                    Skip
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+                {task.status === "pending" && (
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void markTask(task.id, "done");
+                      }}
+                      className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                    >
+                      Done
+                    </button>
 
-      {completedTasks.length > 0 && (
-        <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Completed
-          </p>
-          {completedTasks.map((task) => (
-            <div
-              key={task.id}
-              className="rounded-lg border border-gray-200 bg-gray-50 p-4 opacity-80 dark:border-gray-700 dark:bg-gray-900"
-            >
-              <p className="font-medium line-through text-gray-700 dark:text-gray-300">{task.title}</p>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {skippedTasks.length > 0 && (
-        <div className="space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Skipped
-          </p>
-          {skippedTasks.map((task) => (
-            <div
-              key={task.id}
-              className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 opacity-70 dark:border-gray-600 dark:bg-gray-900"
-            >
-              <p className="font-medium text-gray-700 dark:text-gray-300">{task.title}</p>
-            </div>
-          ))}
-        </div>
-      )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void markTask(task.id, "skipped");
+                      }}
+                      className="rounded-md bg-gray-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-700"
+                    >
+                      Skip
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
 
       {tasksToRender.length === 0 && (
         <p className="text-sm text-gray-600 dark:text-gray-300">

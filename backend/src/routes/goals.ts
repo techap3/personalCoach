@@ -41,14 +41,35 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   }
 
   // store plan
-  const { error: planError } = await supabase.from("plans").insert([
-    {
-      goal_id: goal.id,
-      plan_json: plan,
-    },
-  ]);
+  const { data: planRecord, error: planError } = await supabase
+    .from("plans")
+    .insert([{ goal_id: goal.id, plan_json: plan }])
+    .select()
+    .single();
 
   if (planError) return res.status(500).json(planError);
+
+  // insert plan_steps so the progression engine can track them
+  if (Array.isArray(plan?.plan)) {
+    const planSteps = plan.plan.map((step: any, index: number) => ({
+      plan_id: planRecord.id,
+      goal_id: goal.id,
+      step_index: index,
+      title: step.title,
+      description: step.description,
+      difficulty: step.difficulty,
+      status: index === 0 ? "active" : "pending",
+    }));
+
+    const { error: stepsError } = await supabase
+      .from("plan_steps")
+      .insert(planSteps);
+
+    if (stepsError) {
+      console.error("⚠️  plan_steps insert failed:", stepsError.message);
+      // non-fatal – plan is still usable
+    }
+  }
 
   res.json({ goal, plan });
 });

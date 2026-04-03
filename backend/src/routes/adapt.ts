@@ -22,8 +22,6 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   const supabase = getSupabaseClient(req.token!);
 
   try {
-    console.log("\n🧠 ADAPT START:", goal_id);
-
     // 1. Fetch tasks
     const { data: tasks, error } = await supabase
       .from("tasks")
@@ -39,13 +37,6 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     const completionRate = total === 0 ? 0 : done / total;
 
     const pendingTasks = tasks.filter((t) => t.status === "pending");
-
-    console.log("📊 Metrics:", {
-      total,
-      done,
-      skipped,
-      completionRate,
-    });
 
     if (!pendingTasks.length) {
       return res.status(400).json({ error: "No pending tasks" });
@@ -101,8 +92,6 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
       .from("tasks")
       .insert(newTasks)
       .select();
-
-    console.log("✅ Inserted adapted tasks:", inserted);
 
     return res.json({
       metrics: { total, done, skipped, completionRate },

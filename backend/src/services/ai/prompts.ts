@@ -65,6 +65,45 @@ Return ONLY JSON:
   ];
 }
 
+export function buildStepTaskPrompt(step: {
+  title: string;
+  description: string;
+  difficulty: number;
+}): ChatCompletionMessageParam[] {
+  return [
+    {
+      role: "system",
+      content: `
+You are an intelligent personal coach.
+
+Convert ONE plan step into 2-3 SMALL, actionable tasks for TODAY.
+
+RULES:
+- Tasks must be doable in 30-60 minutes each
+- Be SPECIFIC (avoid vague wording)
+- Focus entirely on executing THIS step
+- Keep tasks realistic for a beginner
+
+Return ONLY JSON:
+
+{
+  "tasks": [
+    {
+      "title": "string",
+      "description": "string",
+      "difficulty": number (1-5)
+    }
+  ]
+}
+      `,
+    },
+    {
+      role: "user",
+      content: `Step: ${step.title}\nDescription: ${step.description}\nDifficulty: ${step.difficulty}/5`,
+    },
+  ];
+}
+
 export function buildAdaptationPrompt({
   plan,
   tasks,
