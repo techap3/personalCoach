@@ -54,6 +54,8 @@ type SessionSummary = {
   message: string;
 };
 
+type SessionStatus = "none" | "active" | "completed";
+
 export default function Home() {
 
   const [user, setUser] = useState<User | null>(null);
@@ -75,11 +77,11 @@ export default function Home() {
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [sessionCompletedMessage, setSessionCompletedMessage] = useState<string | null>(null);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
+  const [latestSessionStatus, setLatestSessionStatus] = useState<SessionStatus>("none");
   const [stepCompleted, setStepCompleted] = useState(false);
   const [planCompleted, setPlanCompleted] = useState(false);
   const [generatingTasks, setGeneratingTasks] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
-  const [sessionCtaState, setSessionCtaState] = useState<"none" | "active" | "completed">("none");
 
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
   const token = session?.access_token;
@@ -146,11 +148,11 @@ export default function Home() {
     setSessionCompleted(false);
     setSessionCompletedMessage(null);
     setSessionSummary(null);
+    setLatestSessionStatus("none");
     setStepCompleted(false);
     setPlanCompleted(false);
     setGeneratingTasks(false);
     setGenerateError(null);
-    setSessionCtaState("none");
   };
 
   /* =========================
@@ -186,19 +188,19 @@ export default function Home() {
           setSessionSummary(null);
         }
         setStepCompleted(false);
-        setSessionCtaState("completed");
+        setLatestSessionStatus("completed");
         setTodayTasks([]);
         return [] as Task[];
       }
 
       setPlanCompleted(false);
 
-      if (data?.type === "ACTIVE_SESSION") {
-        setSessionCtaState("active");
-      } else if (data?.type === "LATEST_SESSION" || data?.sessionCompleted) {
-        setSessionCtaState("completed");
-      } else if (data?.type === "NO_SESSION") {
-        setSessionCtaState("none");
+      if (responseType === "ACTIVE_SESSION" || responseSessionStatus === "active") {
+        setLatestSessionStatus("active");
+      } else if (responseType === "LATEST_SESSION" && responseSessionStatus === "completed") {
+        setLatestSessionStatus("completed");
+      } else if (responseType === "NO_SESSION") {
+        setLatestSessionStatus("none");
       }
 
       if (explicitCompleted) {
@@ -213,6 +215,7 @@ export default function Home() {
         if (nextSummary) {
           setSessionSummary(nextSummary);
         }
+        setLatestSessionStatus("completed");
         setTodayTasks([]);
         return [] as Task[];
       }
@@ -221,6 +224,7 @@ export default function Home() {
         setSessionCompleted(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
+        setLatestSessionStatus("active");
       }
 
       const normalizedTasks: Task[] = (Array.isArray(data) ? data : data.tasks || []).map((task: Task) => ({
@@ -405,7 +409,7 @@ export default function Home() {
 
     console.log("🟦 CTA CLICKED: generateTodaysTasks", {
       goalId,
-      sessionCtaState,
+      sessionStatus,
     });
 
     setGeneratingTasks(true);
@@ -434,15 +438,17 @@ export default function Home() {
       console.log("🧾 SESSION ID", payload?.session?.id || null);
 
       if (payload?.type === "ACTIVE_SESSION") {
-        setSessionCtaState("active");
+        setLatestSessionStatus("active");
         setSessionCompleted(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
       } else if (payload?.type === "NEW_SESSION") {
-        setSessionCtaState("active");
+        setLatestSessionStatus("active");
         setSessionCompleted(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
+      } else if (payload?.type === "LATEST_SESSION" && payload?.sessionStatus === "completed") {
+        setLatestSessionStatus("completed");
       }
 
       const generatedTasks: Task[] = Array.isArray(payload)
@@ -460,6 +466,7 @@ export default function Home() {
         setSessionCompleted(true);
         setSessionCompletedMessage(payload.message);
         setSessionSummary(payload.session_summary || null);
+        setLatestSessionStatus("completed");
         setTodayTasks([]);
         await fetchAllGoalTasks(goalId);
         await fetchAllTasks();
@@ -504,11 +511,11 @@ export default function Home() {
     setPlanCompleted(false);
     setGenerateError(null);
     setGeneratingTasks(false);
-    setSessionCtaState("none");
+    setLatestSessionStatus("none");
     setGoalId(goal.id);
     setActiveStepIndex(0);
-    setViewMode("tasks");
-    setView("TASKS");
+    setViewMode("plan");
+    setView("PLAN");
   };
 
   const restartPlan = () => {
@@ -516,6 +523,7 @@ export default function Home() {
     setSessionCompleted(false);
     setSessionCompletedMessage(null);
     setSessionSummary(null);
+    setLatestSessionStatus("none");
     setStepCompleted(false);
     setGoalId(null);
     setPlan(null);
@@ -527,12 +535,7 @@ export default function Home() {
   };
 
   const handleBackNavigation = () => {
-    if (view === "PLAN") {
-      setView("HOME");
-      return;
-    }
-
-    if (view === "TASKS") {
+    if (view === "TASKS" || view === "PLAN") {
       setViewMode("plan");
       setView("PLAN");
       return;
@@ -561,6 +564,7 @@ export default function Home() {
     : remainingGoals.slice(0, 3);
 
   const roadmapSteps = plan?.plan ?? [];
+  const sessionStatus: SessionStatus = latestSessionStatus;
 
   const derivedActiveStep = (() => {
     if (!planStepMeta.length) return -1;
@@ -591,6 +595,11 @@ export default function Home() {
     derivedActiveStep !== -1 && derivedActiveStep !== undefined
       ? derivedActiveStep
       : safeActiveStepIndex;
+  const totalSteps = roadmapSteps.length;
+  const currentStepDisplayIndex = totalSteps ? Math.min(finalActiveStep + 1, totalSteps) : 0;
+  const overallStepProgressPercent = totalSteps
+    ? Math.round((currentStepDisplayIndex / totalSteps) * 100)
+    : 0;
 
   const getCurrentCycle = (tasks: Task[]) => {
     const visible = tasks.filter((task) => task.status !== "archived");
@@ -861,9 +870,9 @@ export default function Home() {
           >
             {generatingTasks
               ? "Generating..."
-              : sessionCtaState === "active"
+              : sessionStatus === "active"
                 ? "Continue Today"
-                : sessionCtaState === "completed"
+                : sessionStatus === "completed"
                   ? "Start Next Session"
                   : "Start Today"}
           </button>
@@ -914,6 +923,19 @@ export default function Home() {
         <h2 className="mt-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
           Current plan
         </h2>
+
+        <div className="mt-3">
+          <div className="flex justify-between text-xs text-gray-600 dark:text-gray-300 mb-1">
+            <span>Step {currentStepDisplayIndex} of {totalSteps || 0}</span>
+            <span>{overallStepProgressPercent}%</span>
+          </div>
+          <div className="h-2 bg-gray-200 rounded dark:bg-gray-700">
+            <div
+              className="h-2 bg-blue-500 rounded"
+              style={{ width: `${overallStepProgressPercent}%` }}
+            />
+          </div>
+        </div>
 
         <div className="mt-6 space-y-3">
           {roadmapSteps.length ? (
@@ -989,6 +1011,10 @@ export default function Home() {
                   {roadmapSteps[finalActiveStep]?.title || "Current step"}
                 </h3>
 
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Step {currentStepDisplayIndex} of {totalSteps || 0}
+                </p>
+
                 <div className="mt-2">
                   <div className="flex justify-between text-xs mb-1 text-gray-600 dark:text-gray-300">
                     <span>Progress</span>
@@ -1024,7 +1050,7 @@ export default function Home() {
             </div>
           )}
 
-          {sessionCompleted ? (
+          {sessionStatus === "completed" ? (
             <>
               <button
                 onClick={() => { setViewMode("plan"); setView("PLAN"); }}
@@ -1035,7 +1061,7 @@ export default function Home() {
 
               <div className="p-6 text-center border rounded dark:border-gray-700">
                 <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
-                  🎉 You completed today&apos;s session
+                  🎉 You completed today&apos;s tasks
                 </h2>
 
                 <div className="mt-3 grid grid-cols-2 gap-3 text-left">
@@ -1065,7 +1091,7 @@ export default function Home() {
                     }
                   }}
                 >
-                  Start next session
+                  Start Next Session
                 </button>
               </div>
             </>
@@ -1098,6 +1124,7 @@ export default function Home() {
                         setStepCompleted(true);
                       }}
                       onSessionCompleted={(summary) => {
+                        setLatestSessionStatus("completed");
                         setSessionCompleted(true);
                         setSessionCompletedMessage(summary.message);
                         setSessionSummary(summary);
