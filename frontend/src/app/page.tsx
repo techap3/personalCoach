@@ -98,11 +98,15 @@ export default function Home() {
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
   const token = session?.access_token;
 
+  const shouldExposeSessionId =
+    process.env.NODE_ENV === "development" ||
+    process.env.NEXT_PUBLIC_E2E === "true";
+
   const setDevSessionId = useCallback((sessionId?: string | null) => {
-    if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
+    if (shouldExposeSessionId && typeof window !== "undefined") {
       window.__SESSION_ID__ = sessionId ?? null;
     }
-  }, []);
+  }, [shouldExposeSessionId]);
 
   const getApiBaseUrl = useCallback(() => {
     if (!BASE_URL) return null;
@@ -1244,7 +1248,7 @@ export default function Home() {
                 Session needs a retry
               </h2>
               <p className="text-sm text-gray-600 dark:text-gray-300">
-                We couldn't finish task generation for your last session.
+                We couldn&apos;t finish task generation for your last session.
               </p>
               <button
                 className="mt-4 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"

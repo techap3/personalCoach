@@ -1,4 +1,6 @@
 import { test, expect, Page } from "@playwright/test";
+import fs from "fs";
+import path from "path";
 
 declare global {
   interface Window {
@@ -6,11 +8,65 @@ declare global {
   }
 }
 
+const parsedEnvCache: Record<string, string> = {};
+let envParsed = false;
+
+function parseEnvFiles() {
+  if (envParsed) return;
+  envParsed = true;
+
+  const envFiles = [".env.local", ".env"];
+  const roots = [
+    process.cwd(),
+    path.join(process.cwd(), "frontend"),
+    path.resolve(process.cwd(), ".."),
+    path.resolve(process.cwd(), "..", "frontend"),
+  ];
+
+  const seen = new Set<string>();
+  for (const root of roots) {
+    for (const fileName of envFiles) {
+      const fullPath = path.join(root, fileName);
+      if (seen.has(fullPath) || !fs.existsSync(fullPath)) continue;
+      seen.add(fullPath);
+
+      const content = fs.readFileSync(fullPath, "utf8");
+      for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#")) continue;
+
+        const eqIndex = line.indexOf("=");
+        if (eqIndex <= 0) continue;
+
+        const key = line.slice(0, eqIndex).trim();
+        let value = line.slice(eqIndex + 1).trim();
+        if (
+          (value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))
+        ) {
+          value = value.slice(1, -1);
+        }
+
+        if (!(key in parsedEnvCache)) {
+          parsedEnvCache[key] = value;
+        }
+      }
+    }
+  }
+}
+
 function requireEnv(name: string) {
   const value = process.env[name];
+  if (value) return value;
+
+  parseEnvFiles();
+  const fallbackValue = parsedEnvCache[name];
+  if (fallbackValue) return fallbackValue;
+
   if (!value) {
     throw new Error(`Missing required env var: ${name}`);
   }
+
   return value;
 }
 
@@ -18,22 +74,76 @@ async function login(page: Page) {
   const email = requireEnv("E2E_EMAIL");
   const password = requireEnv("E2E_PASSWORD");
 
+  let loginDialogMessage: string | null = null;
+  page.on("dialog", async (dialog) => {
+    loginDialogMessage = dialog.message();
+    await dialog.accept();
+  });
+
   await page.goto("/");
   await page.getByPlaceholder("Email").fill(email);
   await page.getByPlaceholder("Password").fill(password);
   await page.getByRole("button", { name: "Login" }).click();
 
-  await expect(page.getByText("AI Personal Coach").first()).toBeVisible();
+  const successLocators = [
+    page.getByTestId("new-goal-nav-button"),
+    page.getByRole("button", { name: /Start a new goal/i }).first(),
+    page.getByRole("button", { name: "Home" }),
+    page.getByTestId("goal-title-input"),
+  ];
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 30_000) {
+    if (loginDialogMessage) {
+      throw new Error(`Login failed: ${loginDialogMessage}`);
+    }
+
+    for (const locator of successLocators) {
+      if (await locator.isVisible().catch(() => false)) {
+        return;
+      }
+    }
+
+    await page.waitForTimeout(200);
+  }
+
+  throw new Error("Login did not reach an authenticated view within 30s");
 }
 
 async function openGoalCreation(page: Page) {
   const createGoal = page.getByTestId("new-goal-nav-button");
+  const startGoal = page.getByRole("button", { name: /Start a new goal/i }).first();
+  const goalTitleInput = page.getByTestId("goal-title-input");
+  const homeButton = page.getByRole("button", { name: "Home" });
+
+  if (await goalTitleInput.isVisible().catch(() => false)) {
+    return;
+  }
+
+  if (
+    !(await createGoal.isVisible().catch(() => false)) &&
+    !(await startGoal.isVisible().catch(() => false)) &&
+    (await homeButton.isVisible().catch(() => false))
+  ) {
+    await homeButton.click();
+  }
+
+  await Promise.race([
+    createGoal.waitFor({ state: "visible", timeout: 30_000 }),
+    startGoal.waitFor({ state: "visible", timeout: 30_000 }),
+    goalTitleInput.waitFor({ state: "visible", timeout: 30_000 }),
+  ]);
+
+  if (await goalTitleInput.isVisible().catch(() => false)) {
+    return;
+  }
+
   if (await createGoal.isVisible()) {
     await createGoal.click();
     return;
   }
 
-  await page.getByRole("button", { name: /Start a new goal/i }).first().click();
+  await startGoal.click();
 }
 
 async function createGoalAndPlan(page: Page, suffix: string) {

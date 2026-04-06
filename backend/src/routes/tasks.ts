@@ -1299,8 +1299,8 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
           .from("task_sessions")
           .select("*")
           .eq("goal_id", goal_id)
-          .eq("plan_step_id", activeStep.id)
           .eq("session_date", today)
+          .eq("session_type", sessionTypeForNewSession)
           .order("created_at", { ascending: false });
 
         const existingSession =
