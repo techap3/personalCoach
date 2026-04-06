@@ -46,6 +46,10 @@ RULES:
 - Focus on execution, not planning
 - Keep tasks realistic for a beginner
 - Prioritize quality over quantity
+- Assign each task a task_type from: action, learn, reflect, review
+- Ensure at least 1 action task
+- Ensure at least 1 reflect OR review task
+- Avoid clustering all tasks into the same task_type
 
 Return ONLY JSON:
 
@@ -54,7 +58,8 @@ Return ONLY JSON:
     {
       "title": "string",
       "description": "string",
-      "difficulty": number (1-5)
+      "difficulty": number (1-5),
+      "task_type": "action" | "learn" | "reflect" | "review"
     }
   ]
 }
@@ -92,6 +97,10 @@ RULES:
 - Keep tasks realistic for a beginner
 - Prioritize quality over quantity
 - Do not repeat or closely resemble previous tasks provided by the user context
+- Assign each task a task_type from: action, learn, reflect, review
+- Ensure at least 1 action task
+- Ensure at least 1 reflect OR review task
+- Avoid clustering all tasks into the same task_type
 
 Return ONLY JSON:
 
@@ -100,7 +109,8 @@ Return ONLY JSON:
     {
       "title": "string",
       "description": "string",
-      "difficulty": number (1-5)
+      "difficulty": number (1-5),
+      "task_type": "action" | "learn" | "reflect" | "review"
     }
   ]
 }

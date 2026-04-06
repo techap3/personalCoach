@@ -4,6 +4,7 @@ import { getSupabaseClient } from "../db/supabase";
 import { generateTasksForStep } from "../services/ai/taskGenerator";
 import {
   enforceTaskCount,
+  getTaskTypeDistribution,
   MIN_TASKS,
   MAX_TASKS,
   sanitizeGeneratedTasks,
@@ -231,6 +232,8 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     blockedNormalizedTitles: recentNormalizedTitles,
   });
 
+  const typeDistribution = getTaskTypeDistribution(generatedTasks);
+
   if (generatedTasks.length < MIN_TASKS || generatedTasks.length > MAX_TASKS) {
     console.error("Task cap enforcement violation", {
       rawTaskCount,
@@ -247,6 +250,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     title: t.title,
     description: t.description,
     difficulty: t.difficulty,
+    task_type: t.task_type,
     status: "pending",
     scheduled_date: today,
   }));
@@ -271,6 +275,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     rawTaskCount,
     duplicatesRemoved,
     finalStoredTaskCount,
+    type_distribution: typeDistribution,
   });
 
   return res.json({
@@ -597,6 +602,8 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       stepTitle: activeStep.title,
     });
 
+    const adaptedTypeDistribution = getTaskTypeDistribution(adapted);
+
     const { data: existingTargetSessions } = await supabase
       .from("task_sessions")
       .select("*")
@@ -654,6 +661,7 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       title: task.title,
       description: task.description,
       difficulty: task.difficulty,
+      task_type: task.task_type,
       status: "pending",
       scheduled_date: today,
     }));
@@ -662,6 +670,12 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       .from("tasks")
       .insert(newTasks)
       .select();
+
+    console.log("TASK ADAPTATION COUNTS", {
+      session_id: targetSession.id,
+      finalStoredTaskCount: inserted?.length ?? newTasks.length,
+      type_distribution: adaptedTypeDistribution,
+    });
 
     return res.json({
       metrics,

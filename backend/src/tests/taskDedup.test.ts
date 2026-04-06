@@ -21,9 +21,9 @@ describe("task duplicate detection", () => {
 
   it("removes intra-session duplicates", () => {
     const tasks: GeneratedTask[] = [
-      { title: "Go for a run", description: "Task 1", difficulty: 2 },
-      { title: "go for a run!", description: "Task 2", difficulty: 2 },
-      { title: "Walk 10 mins", description: "Task 3", difficulty: 1 },
+      { title: "Go for a run", description: "Task 1", difficulty: 2, task_type: "action" },
+      { title: "go for a run!", description: "Task 2", difficulty: 2, task_type: "action" },
+      { title: "Walk 10 mins", description: "Task 3", difficulty: 1, task_type: "learn" },
     ];
 
     const result = filterDuplicateTasks(tasks, new Set());

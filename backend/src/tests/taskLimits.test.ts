@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   enforceTaskCount,
   MIN_TASKS,
   MAX_TASKS,
+  sanitizeGeneratedTasks,
   type GeneratedTask,
 } from "../services/ai/taskLimits";
 
@@ -10,6 +11,14 @@ const makeTask = (index: number): GeneratedTask => ({
   title: `Task ${index}`,
   description: `Description ${index}`,
   difficulty: 2,
+  task_type:
+    index % 4 === 1
+      ? "action"
+      : index % 4 === 2
+        ? "learn"
+        : index % 4 === 3
+          ? "reflect"
+          : "review",
 });
 
 describe("task limits enforcement", () => {
@@ -43,7 +52,7 @@ describe("task limits enforcement", () => {
 
     expect(output.length).toBeGreaterThanOrEqual(MIN_TASKS);
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
-    expect(output[0].title).toBe("Review the objective");
+    expect(output[0].title).toBe("Spend 10 minutes actively working on your goal");
   });
 
   it("handles null/undefined safely", () => {
@@ -52,5 +61,55 @@ describe("task limits enforcement", () => {
 
     expect(fromNull.length).toBeGreaterThanOrEqual(MIN_TASKS);
     expect(fromUndefined.length).toBeGreaterThanOrEqual(MIN_TASKS);
+  });
+
+  it("always includes required action and reflect/review types", () => {
+    const input: GeneratedTask[] = [
+      { title: "Learn A", description: "A", difficulty: 2, task_type: "learn" },
+      { title: "Learn B", description: "B", difficulty: 2, task_type: "learn" },
+      { title: "Learn C", description: "C", difficulty: 2, task_type: "learn" },
+      { title: "Learn D", description: "D", difficulty: 2, task_type: "learn" },
+      { title: "Learn E", description: "E", difficulty: 2, task_type: "learn" },
+      { title: "Learn F", description: "F", difficulty: 2, task_type: "learn" },
+    ];
+
+    const output = enforceTaskCount(input);
+    const types = output.map((task) => task.task_type);
+
+    expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
+    expect(types).toContain("action");
+    expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
+  });
+
+  it("corrects same-type tasks without exceeding max", () => {
+    const input: GeneratedTask[] = Array.from({ length: MAX_TASKS }, (_, i) => ({
+      title: `Only Learn ${i + 1}`,
+      description: "Same type",
+      difficulty: 2,
+      task_type: "learn",
+    }));
+
+    const output = enforceTaskCount(input);
+    const types = output.map((task) => task.task_type);
+
+    expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
+    expect(types).toContain("action");
+    expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
+  });
+
+  it("logs warning when task_type is missing or invalid and falls back to learn", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const output = sanitizeGeneratedTasks([
+      { title: "Missing Type", description: "A", difficulty: 2 },
+      { title: "Invalid Type", description: "B", difficulty: 2, task_type: "unknown" },
+    ]);
+
+    expect(output).toHaveLength(2);
+    expect(output[0]?.task_type).toBe("learn");
+    expect(output[1]?.task_type).toBe("learn");
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    warnSpy.mockRestore();
   });
 });

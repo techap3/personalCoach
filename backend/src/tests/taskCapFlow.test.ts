@@ -293,6 +293,14 @@ const makeTasks = (count: number) =>
     title: `AI Task ${i + 1}`,
     description: `AI Description ${i + 1}`,
     difficulty: 2,
+    task_type:
+      i % 4 === 0
+        ? "action"
+        : i % 4 === 1
+          ? "learn"
+          : i % 4 === 2
+            ? "reflect"
+            : "review",
   }));
 
 const mockAiTasks = (count: number) => {
@@ -387,7 +395,7 @@ describe("task cap flow regression", () => {
     expect(response.status).toBe(200);
     expect(response.body.tasks.length).toBeGreaterThanOrEqual(3);
     expect(response.body.tasks.length).toBeLessThanOrEqual(5);
-    expect(response.body.tasks[0].title).toBe("Review the objective");
+    expect(response.body.tasks[0].title).toBe("Spend 10 minutes actively working on your goal");
   });
 
   it("does not crash and avoids duplicate persistence on invalid AI output", async () => {
@@ -528,9 +536,9 @@ describe("task cap flow regression", () => {
     mockAiRaw(
       JSON.stringify({
         tasks: [
-          { title: "Unique Task 1", description: "A", difficulty: 2 },
-          { title: "Unique Task 2", description: "B", difficulty: 2 },
-          { title: "Unique Task 3", description: "C", difficulty: 2 },
+          { title: "Unique Task 1", description: "A", difficulty: 2, task_type: "action" },
+          { title: "Unique Task 2", description: "B", difficulty: 2, task_type: "learn" },
+          { title: "Unique Task 3", description: "C", difficulty: 2, task_type: "reflect" },
         ],
       })
     );
@@ -573,5 +581,77 @@ describe("task cap flow regression", () => {
     expect(new Set(normalized).size).toBe(normalized.length);
     expect(response.body.tasks.length).toBeGreaterThanOrEqual(3);
     expect(response.body.tasks.length).toBeLessThanOrEqual(5);
+  });
+
+  it("injects action and reflect when AI returns only learn tasks", async () => {
+    const goalId = await createGoal();
+
+    mockAiRaw(
+      JSON.stringify({
+        tasks: [
+          { title: "Read concept A", description: "Learn", difficulty: 2, task_type: "learn" },
+          { title: "Read concept B", description: "Learn", difficulty: 2, task_type: "learn" },
+          { title: "Read concept C", description: "Learn", difficulty: 2, task_type: "learn" },
+        ],
+      })
+    );
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    const types = response.body.tasks.map((task: any) => task.task_type);
+    expect(types).toContain("action");
+    expect(types.some((type: string) => type === "reflect" || type === "review")).toBe(true);
+  });
+
+  it("keeps valid task type mix unchanged", async () => {
+    const goalId = await createGoal();
+
+    mockAiRaw(
+      JSON.stringify({
+        tasks: [
+          { title: "Ship one feature slice", description: "Do", difficulty: 2, task_type: "action" },
+          { title: "Study one implementation example", description: "Learn", difficulty: 2, task_type: "learn" },
+          { title: "Review today outcomes", description: "Review", difficulty: 1, task_type: "review" },
+        ],
+      })
+    );
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks.map((task: any) => task.task_type)).toEqual([
+      "action",
+      "learn",
+      "review",
+    ]);
+  });
+
+  it("adds fallback reflect when reflect/review type is missing", async () => {
+    const goalId = await createGoal();
+
+    mockAiRaw(
+      JSON.stringify({
+        tasks: [
+          { title: "Execute small coding task", description: "Do", difficulty: 2, task_type: "action" },
+          { title: "Read official docs", description: "Learn", difficulty: 2, task_type: "learn" },
+          { title: "Watch one walkthrough", description: "Learn", difficulty: 2, task_type: "learn" },
+        ],
+      })
+    );
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks.some((task: any) => task.task_type === "reflect" || task.task_type === "review")).toBe(true);
   });
 });

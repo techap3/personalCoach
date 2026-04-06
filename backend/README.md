@@ -24,6 +24,7 @@ Create `backend/.env`:
 ```env
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_PUBLISHABLE_KEY=your-supabase-anon-key
+DATABASE_URL=postgresql://postgres:password@db.host:5432/postgres?sslmode=require
 OPENROUTER_API_KEY=sk-or-...
 AI_PROVIDER=openrouter
 ```
@@ -32,7 +33,35 @@ AI_PROVIDER=openrouter
 pnpm dev      # development with hot reload
 pnpm build    # compile to dist/
 pnpm start    # run compiled build
+pnpm migrate  # execute pending SQL migrations in db/migrations
 ```
+
+### Migrations
+
+SQL files in `backend/db/migrations` are executed in filename order.
+
+The runner tracks executed files in a `migrations` table:
+
+- `id` (filename, primary key)
+- `executed_at` (timestamp)
+
+Behavior:
+
+- Creates `migrations` table if missing
+- Skips already executed files
+- Runs each migration in a transaction
+- Stops on first failure and logs the error clearly
+- Resolves DB URL in order: `DATABASE_URL` then `SUPABASE_DB_URL`
+- If only `SUPABASE_URL` exists, logs a warning and does not treat it as a SQL connection string
+- In development, missing DB URL skips migrations with warning
+- In production, missing DB URL fails startup
+
+Startup behavior:
+
+- Migrations run automatically before server startup in all non-test environments.
+- Startup is blocked in production if migration execution fails.
+- Startup continues in non-production if migration execution fails, with clear warnings.
+- Already executed migrations are skipped safely.
 
 ---
 
