@@ -61,4 +61,38 @@ describe("task limits enforcement", () => {
     expect(fromNull.length).toBeGreaterThanOrEqual(MIN_TASKS);
     expect(fromUndefined.length).toBeGreaterThanOrEqual(MIN_TASKS);
   });
+
+  it("always includes required action and reflect/review types", () => {
+    const input: GeneratedTask[] = [
+      { title: "Learn A", description: "A", difficulty: 2, task_type: "learn" },
+      { title: "Learn B", description: "B", difficulty: 2, task_type: "learn" },
+      { title: "Learn C", description: "C", difficulty: 2, task_type: "learn" },
+      { title: "Learn D", description: "D", difficulty: 2, task_type: "learn" },
+      { title: "Learn E", description: "E", difficulty: 2, task_type: "learn" },
+      { title: "Learn F", description: "F", difficulty: 2, task_type: "learn" },
+    ];
+
+    const output = enforceTaskCount(input);
+    const types = output.map((task) => task.task_type);
+
+    expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
+    expect(types).toContain("action");
+    expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
+  });
+
+  it("corrects same-type tasks without exceeding max", () => {
+    const input: GeneratedTask[] = Array.from({ length: MAX_TASKS }, (_, i) => ({
+      title: `Only Learn ${i + 1}`,
+      description: "Same type",
+      difficulty: 2,
+      task_type: "learn",
+    }));
+
+    const output = enforceTaskCount(input);
+    const types = output.map((task) => task.task_type);
+
+    expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
+    expect(types).toContain("action");
+    expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
+  });
 });

@@ -1,11 +1,8 @@
 import type { GeneratedTask } from "./taskLimits";
+import { normalizeTaskTitle as normalizeTaskTitleShared } from "../utils/normalization";
 
 export function normalizeTaskTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return normalizeTaskTitleShared(title);
 }
 
 export function isDuplicateTaskTitle(title: string, otherTitle: string): boolean {

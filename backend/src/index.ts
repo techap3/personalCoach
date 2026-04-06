@@ -53,6 +53,9 @@ async function startServer() {
     }
   } catch (error) {
     console.error("[migrate] Startup migration failed", error);
+    if (process.env.NODE_ENV === "production") {
+      throw error;
+    }
     console.warn("[migrate] Continuing startup despite migration failure");
   }
 
@@ -67,6 +70,9 @@ async function startServer() {
 
 startServer().catch((error) => {
   console.error("[startup] Unexpected startup error", error);
+  if (process.env.NODE_ENV === "production") {
+    process.exit(1);
+  }
 });
 
 export { app };

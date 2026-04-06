@@ -4,7 +4,6 @@ import { getSupabaseClient } from "../db/supabase";
 import { generateTasksForStep } from "../services/ai/taskGenerator";
 import {
   enforceTaskCount,
-  enforceTaskTypeMix,
   getTaskTypeDistribution,
   MIN_TASKS,
   MAX_TASKS,
@@ -228,11 +227,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     recentNormalizedTitles
   );
 
-  const typeStructuredTasks = enforceTaskTypeMix(dedupedTasks, {
-    blockedNormalizedTitles: recentNormalizedTitles,
-  });
-
-  const generatedTasks = enforceTaskCount(typeStructuredTasks, {
+  const generatedTasks = enforceTaskCount(dedupedTasks, {
     stepTitle: activeStep.title,
     blockedNormalizedTitles: recentNormalizedTitles,
   });

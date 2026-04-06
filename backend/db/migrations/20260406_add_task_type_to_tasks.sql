@@ -2,8 +2,9 @@ alter table if exists tasks
   add column if not exists task_type text;
 
 update tasks
-set task_type = coalesce(task_type, 'learn')
-where task_type is null;
+set task_type = 'learn'
+where task_type is null
+  or task_type not in ('action', 'learn', 'reflect', 'review');
 
 alter table if exists tasks
   alter column task_type set default 'learn';

@@ -1,3 +1,5 @@
+import { normalizeTaskTitle } from "../utils/normalization";
+
 export const MIN_TASKS = 3;
 export const MAX_TASKS = 5;
 
@@ -34,14 +36,6 @@ export type GeneratedTask = {
   difficulty: number;
   task_type: TaskType;
 };
-
-function normalizeTaskTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 function normalizeTaskType(value: unknown): TaskType {
   if (typeof value !== "string") return "learn";
@@ -186,75 +180,65 @@ export function enforceTaskTypeMix(
 
   const hasType = (type: TaskType) => tasks.some((task) => task.task_type === type);
 
+  if (!tasks.length) {
+    tasks.push(buildFallbackTaskByType("action", existingTitles, blockedTitles));
+    tasks.push(buildFallbackTaskByType("reflect", existingTitles, blockedTitles));
+    return tasks;
+  }
+
   if (!hasType("action")) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type !== "reflect" && task.task_type !== "review");
-    if (replaceIndex >= 0) {
-      replaceTaskWithType(replaceIndex, "action");
-    } else {
-      tasks.push(buildFallbackTaskByType("action", existingTitles, blockedTitles));
-    }
+    const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
+    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : 0, "action");
   }
 
   if (!hasType("reflect") && !hasType("review")) {
     const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
-    if (replaceIndex >= 0) {
-      replaceTaskWithType(replaceIndex, "reflect");
-    } else {
-      tasks.push(buildFallbackTaskByType("reflect", existingTitles, blockedTitles));
-    }
+    const fallbackIndex = tasks.findIndex((task) => task.task_type !== "action");
+    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : Math.max(0, fallbackIndex), "reflect");
   }
 
-  if (!hasType("learn") && tasks.length >= 3) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type !== "action" && task.task_type !== "reflect" && task.task_type !== "review");
-    if (replaceIndex >= 0) {
-      replaceTaskWithType(replaceIndex, "learn");
-    } else {
-      tasks.push(buildFallbackTaskByType("learn", existingTitles, blockedTitles));
-    }
+  if (!hasType("action")) {
+    const replaceIndex = tasks.findIndex((task) => task.task_type !== "reflect" && task.task_type !== "review");
+    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : 0, "action");
   }
 
   const uniqueTypes = new Set(tasks.map((task) => task.task_type));
-  if (uniqueTypes.size === 1 && tasks.length > 1) {
+  if (uniqueTypes.size === 1 && tasks.length > 1 && tasks[0]?.task_type !== "learn") {
     replaceTaskWithType(1, "learn");
   }
 
   return tasks;
 }
 
-export function enforceTaskCount(
-  input: unknown,
+function fillToMinimumTaskCount(
+  tasks: GeneratedTask[],
   options?: { stepTitle?: string; blockedNormalizedTitles?: Set<string> | string[] }
-): GeneratedTask[] {
-  const tasks = enforceTaskTypeMix(input, {
-    blockedNormalizedTitles: options?.blockedNormalizedTitles,
-  });
-  const bounded = tasks.slice(0, MAX_TASKS);
+) {
   const blockedTitles = new Set(
     Array.isArray(options?.blockedNormalizedTitles)
       ? options?.blockedNormalizedTitles
       : Array.from(options?.blockedNormalizedTitles ?? [])
   );
 
-  if (bounded.length >= MIN_TASKS) {
-    return bounded;
+  if (tasks.length >= MIN_TASKS) {
+    return;
   }
 
   const fallback = buildDeterministicFallbackTasks(options?.stepTitle);
-  const existingTitles = new Set(bounded.map((task) => normalizeTaskTitle(task.title)));
+  const existingTitles = new Set(tasks.map((task) => normalizeTaskTitle(task.title)));
 
   for (const fallbackTask of fallback) {
-    if (bounded.length >= MIN_TASKS) break;
+    if (tasks.length >= MIN_TASKS) break;
     const normalizedFallbackTitle = normalizeTaskTitle(fallbackTask.title);
 
     if (!existingTitles.has(normalizedFallbackTitle) && !blockedTitles.has(normalizedFallbackTitle)) {
-      bounded.push(fallbackTask);
+      tasks.push(fallbackTask);
       existingTitles.add(normalizedFallbackTitle);
     }
   }
 
-  // Deterministic final guard in case titles already existed.
   let fallbackIndex = 0;
-  while (bounded.length < MIN_TASKS) {
+  while (tasks.length < MIN_TASKS) {
     const baseTask = fallback[fallbackIndex % fallback.length];
     let variantCounter = 2;
     let candidateTitle = baseTask.title;
@@ -266,13 +250,32 @@ export function enforceTaskCount(
       variantCounter += 1;
     }
 
-    bounded.push({
+    tasks.push({
       ...baseTask,
       title: candidateTitle,
     });
     existingTitles.add(normalizedCandidate);
     fallbackIndex += 1;
   }
+}
 
-  return bounded.slice(0, MAX_TASKS);
+export function enforceTaskCount(
+  input: unknown,
+  options?: { stepTitle?: string; blockedNormalizedTitles?: Set<string> | string[] }
+): GeneratedTask[] {
+  const bounded = sanitizeGeneratedTasks(input).slice(0, MAX_TASKS);
+
+  fillToMinimumTaskCount(bounded, options);
+
+  const withTypes = enforceTaskTypeMix(bounded, {
+    blockedNormalizedTitles: options?.blockedNormalizedTitles,
+  });
+
+  fillToMinimumTaskCount(withTypes, options);
+
+  const corrected = enforceTaskTypeMix(withTypes, {
+    blockedNormalizedTitles: options?.blockedNormalizedTitles,
+  });
+
+  return corrected.slice(0, MAX_TASKS);
 }
