@@ -9,6 +9,13 @@ import GoalForm from "./components/GoalForm";
 import PlanView from "./components/PlanView";
 import TasksView from "./components/TasksView";
 import DailySummary from "./components/DailySummary";
+import {
+  getCompletionCtaVariant,
+  getGenerateButtonLabel,
+  isGenerateDisabled,
+  type SessionStatus,
+  type SessionType,
+} from "./sessionUi";
 
 import { PlanResponse } from "@/types/plan";
 
@@ -54,8 +61,6 @@ type SessionSummary = {
   message: string;
 };
 
-type SessionStatus = "none" | "active" | "completed";
-
 export default function Home() {
 
   const [user, setUser] = useState<User | null>(null);
@@ -77,9 +82,11 @@ export default function Home() {
   const [sessionCompletedMessage, setSessionCompletedMessage] = useState<string | null>(null);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [latestSessionStatus, setLatestSessionStatus] = useState<SessionStatus>("none");
+  const [latestSessionType, setLatestSessionType] = useState<SessionType>("primary");
   const [stepCompleted, setStepCompleted] = useState(false);
   const [planCompleted, setPlanCompleted] = useState(false);
   const [generatingTasks, setGeneratingTasks] = useState(false);
+  const [generationInProgress, setGenerationInProgress] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
 
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
@@ -147,9 +154,11 @@ export default function Home() {
     setSessionCompletedMessage(null);
     setSessionSummary(null);
     setLatestSessionStatus("none");
+    setLatestSessionType("primary");
     setStepCompleted(false);
     setPlanCompleted(false);
     setGeneratingTasks(false);
+    setGenerationInProgress(false);
     setGenerateError(null);
   };
 
@@ -171,11 +180,14 @@ export default function Home() {
       const data = await res.json();
       const responseType = data?.type;
       const responseSessionStatus = data?.sessionStatus || data?.session?.status;
+      const responseSessionType = data?.sessionType || data?.session?.session_type || "primary";
+      const responseProgressStatus = data?.status;
       const explicitCompleted =
         data?.sessionCompleted === true ||
         (responseType === "LATEST_SESSION" && responseSessionStatus === "completed");
       const explicitActiveOrIncomplete =
         responseType === "ACTIVE_SESSION" || responseSessionStatus === "active";
+      const explicitFailed = responseSessionStatus === "failed";
 
       if (data?.planCompleted) {
         setPlanCompleted(true);
@@ -186,6 +198,8 @@ export default function Home() {
         }
         setStepCompleted(false);
         setLatestSessionStatus("completed");
+        setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setTodayTasks([]);
         return [] as Task[];
       }
@@ -194,10 +208,20 @@ export default function Home() {
 
       if (responseType === "ACTIVE_SESSION" || responseSessionStatus === "active") {
         setLatestSessionStatus("active");
+        setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(responseProgressStatus === "generation_in_progress");
+      } else if (responseSessionStatus === "failed") {
+        setLatestSessionStatus("failed");
+        setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
       } else if (responseType === "LATEST_SESSION" && responseSessionStatus === "completed") {
         setLatestSessionStatus("completed");
+        setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
       } else if (responseType === "NO_SESSION") {
         setLatestSessionStatus("none");
+        setLatestSessionType("primary");
+        setGenerationInProgress(false);
       }
 
       if (explicitCompleted) {
@@ -212,6 +236,8 @@ export default function Home() {
           setSessionSummary(nextSummary);
         }
         setLatestSessionStatus("completed");
+        setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setTodayTasks([]);
         return [] as Task[];
       }
@@ -220,6 +246,19 @@ export default function Home() {
         setSessionCompletedMessage(null);
         setSessionSummary(null);
         setLatestSessionStatus("active");
+        setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(responseProgressStatus === "generation_in_progress");
+      }
+
+      if (explicitFailed) {
+        setSessionCompletedMessage(null);
+        setSessionSummary(null);
+        setLatestSessionStatus("failed");
+        setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerateError("Last session failed to generate tasks. Retry to start a fresh session.");
+        setGenerationInProgress(false);
+        setTodayTasks([]);
+        return [] as Task[];
       }
 
       const normalizedTasks: Task[] = (Array.isArray(data) ? data : data.tasks || []).map((task: Task) => ({
@@ -405,6 +444,7 @@ export default function Home() {
     console.log("🟦 CTA CLICKED: startNewSession", {
       goalId,
       sessionStatus,
+      sessionType,
     });
 
     setGeneratingTasks(true);
@@ -422,9 +462,22 @@ export default function Home() {
       });
 
       if (!res.ok) {
-        const errText = await res.text();
-        console.error("❌ Task gen error:", errText);
-        setGenerateError(errText || "Failed to generate tasks.");
+        const errorPayload = await res.json().catch(() => null);
+        const errText =
+          errorPayload?.error === "daily_limit_reached"
+            ? "You've reached today's limit"
+            : errorPayload?.error || "Failed to generate tasks.";
+        console.error("❌ Task gen error:", errorPayload || errText);
+        setGenerateError(errText);
+
+        if (errorPayload?.error === "daily_limit_reached") {
+          setLatestSessionStatus("completed");
+          setLatestSessionType("bonus");
+          if (errorPayload?.summary) {
+            setSessionSummary(errorPayload.summary);
+            setSessionCompletedMessage(errorPayload.summary.message || "Great momentum!");
+          }
+        }
         return;
       }
 
@@ -434,16 +487,27 @@ export default function Home() {
 
       if (payload?.type === "ACTIVE_SESSION") {
         setLatestSessionStatus("active");
+        setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(payload?.status === "generation_in_progress");
         setSessionCompletedMessage(null);
         setSessionSummary(null);
       } else if (payload?.type === "NEW_SESSION") {
         setLatestSessionStatus("active");
+        setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
       } else if (payload?.type === "LATEST_SESSION" && payload?.sessionStatus === "completed") {
         // Guard against accidentally continuing a completed session when a new one was requested.
         setLatestSessionStatus("completed");
+        setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setGenerateError("Unable to start a new session yet. Previous session is already completed.");
+      } else if (payload?.sessionStatus === "failed") {
+        setLatestSessionStatus("failed");
+        setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
+        setGenerateError("Last session failed to generate tasks. Retry to continue.");
       }
 
       const generatedTasks: Task[] = Array.isArray(payload)
@@ -461,6 +525,8 @@ export default function Home() {
         setSessionCompletedMessage(payload.message);
         setSessionSummary(payload.session_summary || null);
         setLatestSessionStatus("completed");
+        setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setTodayTasks([]);
         await fetchAllGoalTasks(goalId);
         await fetchAllTasks();
@@ -513,6 +579,11 @@ export default function Home() {
   };
 
   const handleGenerateClick = async () => {
+    if (sessionStatus === "completed" && sessionType === "bonus") {
+      setGenerateError("You've reached today's limit");
+      return;
+    }
+
     if (sessionStatus === "active") {
       await continueSession();
       return;
@@ -526,6 +597,8 @@ export default function Home() {
     setGenerateError(null);
     setGeneratingTasks(false);
     setLatestSessionStatus("none");
+    setLatestSessionType("primary");
+    setGenerationInProgress(false);
     setGoalId(goal.id);
     setActiveStepIndex(0);
     setViewMode("plan");
@@ -537,6 +610,8 @@ export default function Home() {
     setSessionCompletedMessage(null);
     setSessionSummary(null);
     setLatestSessionStatus("none");
+    setLatestSessionType("primary");
+    setGenerationInProgress(false);
     setStepCompleted(false);
     setGoalId(null);
     setPlan(null);
@@ -578,6 +653,9 @@ export default function Home() {
 
   const roadmapSteps = plan?.plan ?? [];
   const sessionStatus: SessionStatus = latestSessionStatus;
+  const sessionType: SessionType = latestSessionType;
+
+  const completionVariant = getCompletionCtaVariant(sessionType);
 
   const derivedActiveStep = (() => {
     if (!planStepMeta.length) return -1;
@@ -879,15 +957,9 @@ export default function Home() {
               void handleGenerateClick();
             }}
             className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
-            disabled={!goalId || planCompleted || generatingTasks}
+            disabled={isGenerateDisabled(sessionStatus, sessionType, generatingTasks, Boolean(goalId), planCompleted)}
           >
-            {generatingTasks
-              ? "Generating..."
-              : sessionStatus === "active"
-                ? "Continue Today"
-                : sessionStatus === "completed"
-                  ? "Start Next Session"
-                  : "Start Today"}
+            {getGenerateButtonLabel(sessionStatus, sessionType, generatingTasks)}
           </button>
         </div>
 
@@ -1073,9 +1145,25 @@ export default function Home() {
               </button>
 
               <div className="p-6 text-center border rounded dark:border-gray-700">
-                <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
-                  🎉 You completed today&apos;s tasks
-                </h2>
+                {sessionType === "primary" ? (
+                  <>
+                    <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
+                      🎉 {completionVariant.heading}
+                    </h2>
+                    <p className="text-sm font-medium text-gray-700 dark:text-gray-200">
+                      {completionVariant.subheading}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
+                      {completionVariant.heading}
+                    </h2>
+                    <p className="text-sm font-medium text-gray-700 dark:text-gray-200">
+                      {completionVariant.subheading}
+                    </p>
+                  </>
+                )}
 
                 <div className="mt-3 grid grid-cols-2 gap-3 text-left">
                   <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
@@ -1096,16 +1184,53 @@ export default function Home() {
                   {sessionSummary?.message || sessionCompletedMessage || "Nice work today 🎉"}
                 </p>
 
-                <button
-                  className="mt-3 bg-blue-600 text-white px-4 py-2 rounded"
-                  onClick={() => {
-                    void handleGenerateClick();
-                  }}
-                >
-                  Start Next Session
-                </button>
+                {sessionType === "primary" ? (
+                  <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-center">
+                    <button
+                      className="rounded border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                      onClick={() => {
+                        setViewMode("plan");
+                        setView("PLAN");
+                      }}
+                    >
+                      Continue Tomorrow
+                    </button>
+                    <button
+                      className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
+                      onClick={() => {
+                        void handleGenerateClick();
+                      }}
+                    >
+                      Do More Today
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="mt-3 bg-gray-300 text-gray-700 px-4 py-2 rounded cursor-not-allowed dark:bg-gray-700 dark:text-gray-300"
+                    disabled
+                  >
+                    Come Back Tomorrow
+                  </button>
+                )}
               </div>
             </>
+          ) : sessionStatus === "failed" ? (
+            <div className="p-6 text-center border rounded dark:border-gray-700">
+              <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
+                Session needs a retry
+              </h2>
+              <p className="text-sm text-gray-600 dark:text-gray-300">
+                We couldn't finish task generation for your last session.
+              </p>
+              <button
+                className="mt-4 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+                onClick={() => {
+                  void startNewSession();
+                }}
+              >
+                Retry Session
+              </button>
+            </div>
           ) : todayTasks.length > 0 ? (
             <>
               
@@ -1159,6 +1284,10 @@ export default function Home() {
                 );
               })()}
             </>
+          ) : generationInProgress ? (
+            <div className="text-sm text-gray-600 dark:text-gray-300">
+              Tasks are being generated. Please wait a moment...
+            </div>
           ) : (
             <div className="text-sm text-gray-600 dark:text-gray-300">
               Your active tasks will appear here.

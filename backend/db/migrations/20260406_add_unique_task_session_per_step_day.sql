@@ -9,7 +9,15 @@ begin
           ctid,
           row_number() over (
             partition by goal_id, plan_step_id, session_date
-            order by created_at asc, id asc
+            order by
+              case
+                when status = 'active' then 0
+                when status = 'failed' then 1
+                when status = 'completed' then 2
+                else 3
+              end,
+              created_at asc,
+              id asc
           ) as rn
         from task_sessions
       ) duplicates
