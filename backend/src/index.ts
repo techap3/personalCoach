@@ -7,6 +7,8 @@ import goalRoutes from "./routes/goals";
 import taskRoutes from "./routes/tasks";
 import adaptRoutes from "./routes/adapt";
 import { runMigrations } from "./scripts/migrationRunner";
+import { traceMiddleware } from "./middleware/trace";
+import logger from "./logger";
 
 const app = express();
 
@@ -23,6 +25,7 @@ app.use(
 // app.options("*", cors());
 
 app.use(express.json());
+app.use(traceMiddleware);
 
 // health
 app.get("/health", (_, res) => {
@@ -45,31 +48,35 @@ async function startServer() {
   try {
     const summary = await runMigrations(process.env);
     if (summary.skippedRun) {
-      console.warn("[migrate] Startup migrations skipped");
+      logger.warn({ event: "migrate.startup.skipped" }, "Startup migrations skipped");
     } else {
-      console.log(
-        `[migrate] Startup migrations finished (executed=${summary.executed}, skipped=${summary.skipped})`
+      logger.info(
+        {
+          event: "migrate.startup.finished",
+          executed: summary.executed,
+          skipped: summary.skipped,
+        },
+        "Startup migrations finished"
       );
     }
   } catch (error) {
-    console.error("[migrate] Startup migration failed", error);
+    logger.error({ event: "migrate.startup.failed", error }, "Startup migration failed");
     if (process.env.NODE_ENV === "production") {
       throw error;
     }
-    console.warn("[migrate] Continuing startup despite migration failure");
+    logger.warn({ event: "migrate.startup.continue" }, "Continuing startup despite migration failure");
   }
 
-  console.log("Starting server...");
+  logger.info({ event: "server.starting", port: PORT }, "Starting server");
   const server = app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log("Server is alive and listening...");
+    logger.info({ event: "server.started", port: PORT }, "Server running and listening");
   });
 
   return server;
 }
 
 startServer().catch((error) => {
-  console.error("[startup] Unexpected startup error", error);
+  logger.error({ event: "startup.unexpected_error", error }, "Unexpected startup error");
   if (process.env.NODE_ENV === "production") {
     process.exit(1);
   }

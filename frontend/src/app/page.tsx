@@ -19,6 +19,12 @@ import {
 
 import { PlanResponse } from "@/types/plan";
 
+declare global {
+  interface Window {
+    __SESSION_ID__?: string | null;
+  }
+}
+
 type Task = {
   id: string;
   title: string;
@@ -92,6 +98,12 @@ export default function Home() {
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
   const token = session?.access_token;
 
+  const setDevSessionId = useCallback((sessionId?: string | null) => {
+    if (process.env.NODE_ENV === "development" && typeof window !== "undefined") {
+      window.__SESSION_ID__ = sessionId ?? null;
+    }
+  }, []);
+
   const getApiBaseUrl = useCallback(() => {
     if (!BASE_URL) return null;
 
@@ -160,6 +172,7 @@ export default function Home() {
     setGeneratingTasks(false);
     setGenerationInProgress(false);
     setGenerateError(null);
+    setDevSessionId(null);
   };
 
   /* =========================
@@ -182,6 +195,7 @@ export default function Home() {
       const responseSessionStatus = data?.sessionStatus || data?.session?.status;
       const responseSessionType = data?.sessionType || data?.session?.session_type || "primary";
       const responseProgressStatus = data?.status;
+      const responseSessionId = data?.session?.id ? String(data.session.id) : null;
       const explicitCompleted =
         data?.sessionCompleted === true ||
         (responseType === "LATEST_SESSION" && responseSessionStatus === "completed");
@@ -200,9 +214,12 @@ export default function Home() {
         setLatestSessionStatus("completed");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
         setGenerationInProgress(false);
+        setDevSessionId(null);
         setTodayTasks([]);
         return [] as Task[];
       }
+
+      setDevSessionId(responseSessionId);
 
       setPlanCompleted(false);
 
@@ -222,6 +239,7 @@ export default function Home() {
         setLatestSessionStatus("none");
         setLatestSessionType("primary");
         setGenerationInProgress(false);
+        setDevSessionId(null);
       }
 
       if (explicitCompleted) {
@@ -257,6 +275,7 @@ export default function Home() {
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
         setGenerateError("Last session failed to generate tasks. Retry to start a fresh session.");
         setGenerationInProgress(false);
+        setDevSessionId(responseSessionId);
         setTodayTasks([]);
         return [] as Task[];
       }
@@ -272,7 +291,7 @@ export default function Home() {
       console.error("❌ Fetch tasks error:", err);
       return [] as Task[];
     }
-  }, [getApiBaseUrl, token]);
+  }, [getApiBaseUrl, setDevSessionId, token]);
 
   /* =========================
      FETCH PLAN
@@ -484,6 +503,7 @@ export default function Home() {
       const payload = await res.json();
       console.log("🟩 GENERATE RESPONSE", payload);
       console.log("🧾 SESSION ID", payload?.session?.id || null);
+      setDevSessionId(payload?.session?.id ? String(payload.session.id) : null);
 
       if (payload?.type === "ACTIVE_SESSION") {
         setLatestSessionStatus("active");
@@ -599,6 +619,7 @@ export default function Home() {
     setLatestSessionStatus("none");
     setLatestSessionType("primary");
     setGenerationInProgress(false);
+    setDevSessionId(null);
     setGoalId(goal.id);
     setActiveStepIndex(0);
     setViewMode("plan");
@@ -612,6 +633,7 @@ export default function Home() {
     setLatestSessionStatus("none");
     setLatestSessionType("primary");
     setGenerationInProgress(false);
+    setDevSessionId(null);
     setStepCompleted(false);
     setGoalId(null);
     setPlan(null);
@@ -812,6 +834,7 @@ export default function Home() {
     <div className="space-y-6">
       <div className="flex justify-end">
         <button
+          data-testid="new-goal-nav-button"
           onClick={() => setView("CREATE_GOAL")}
           className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md transition hover:bg-blue-700"
         >
@@ -953,6 +976,7 @@ export default function Home() {
           </div>
 
           <button
+            data-testid="plan-generate-session-button"
             onClick={() => {
               void handleGenerateClick();
             }}
@@ -1096,7 +1120,7 @@ export default function Home() {
                   {roadmapSteps[finalActiveStep]?.title || "Current step"}
                 </h3>
 
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400" data-testid="current-step-indicator">
                   Step {currentStepDisplayIndex} of {totalSteps || 0}
                 </p>
 
@@ -1144,7 +1168,7 @@ export default function Home() {
                 ← Back to Plan
               </button>
 
-              <div className="p-6 text-center border rounded dark:border-gray-700">
+              <div className="p-6 text-center border rounded dark:border-gray-700" data-testid="session-completed-screen">
                 {sessionType === "primary" ? (
                   <>
                     <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
@@ -1215,7 +1239,7 @@ export default function Home() {
               </div>
             </>
           ) : sessionStatus === "failed" ? (
-            <div className="p-6 text-center border rounded dark:border-gray-700">
+            <div className="p-6 text-center border rounded dark:border-gray-700" data-testid="session-failed-screen">
               <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
                 Session needs a retry
               </h2>
@@ -1285,7 +1309,7 @@ export default function Home() {
               })()}
             </>
           ) : generationInProgress ? (
-            <div className="text-sm text-gray-600 dark:text-gray-300">
+            <div className="text-sm text-gray-600 dark:text-gray-300" data-testid="generation-in-progress-state">
               Tasks are being generated. Please wait a moment...
             </div>
           ) : (

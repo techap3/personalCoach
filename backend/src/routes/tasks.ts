@@ -23,6 +23,7 @@ import {
 } from "../services/memory/userMemory";
 import { getTargetDifficulty } from "../services/difficultyService";
 import { generateSessionSummary } from "../services/sessionSummary";
+import logger from "../logger";
 
 const router = Router();
 const RECENT_SESSION_LOOKBACK = 5;
@@ -163,6 +164,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
   const { goal_id } = req.body;
   const goalId = goal_id as string;
   const supabase = getSupabaseClient(req.token!);
+  const reqLog = req.log ?? logger;
   const today = getLocalDateString();
 
   if (!goalId) {
@@ -191,7 +193,15 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
   const latestTodaySession = todaySessions[todaySessions.length - 1] ?? null;
 
   if (todaySessions.length > DAILY_SESSION_LIMIT) {
-    console.warn("More sessions than expected for a goal/day", { goalId, today, count: todaySessions.length });
+    reqLog.warn(
+      {
+        event: "session.anomaly.daily_count_exceeded",
+        goal_id: goalId,
+        session_date: today,
+        count: todaySessions.length,
+      },
+      "More sessions than expected for goal/day"
+    );
   }
 
   let workingSession = activeTodaySession ?? failedPrimarySession;
@@ -239,6 +249,16 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
         .update({ status: "failed", generation_locked: false })
         .eq("id", workingSession.id);
 
+      reqLog.warn(
+        {
+          event: "session.failed",
+          session_id: workingSession.id,
+          goal_id: goalId,
+          reason: "active_empty_stale",
+        },
+        "Marked stale active session as failed"
+      );
+
       workingSession = {
         ...workingSession,
         status: "failed",
@@ -275,14 +295,17 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "No active step. Plan may be complete." });
   }
 
-  console.log("ACTIVE STEP:", activeStep.id);
-  console.log("STEP STATUS:", activeStep.status);
-
-  console.log("SESSION CHECK:", {
-    hasSession: !!workingSession,
-    sessionStatus: workingSession?.status,
-    stepId: activeStep.id,
-  });
+  reqLog.info(
+    {
+      event: "session.check",
+      goal_id: goalId,
+      has_session: !!workingSession,
+      session_status: workingSession?.status,
+      step_id: activeStep.id,
+      step_status: activeStep.status,
+    },
+    "Session check before generation"
+  );
 
   if (workingSession && workingSession.status === "active") {
     const { data: tasks } = await supabase
@@ -312,16 +335,30 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
         });
       }
 
-      console.warn("[tasks] Found active session without tasks, marking failed for recovery", {
-        goal_id: goalId,
-        step_id: activeStep.id,
-        session_id: workingSession.id,
-      });
+      reqLog.warn(
+        {
+          event: "session.active_empty_stale",
+          goal_id: goalId,
+          step_id: activeStep.id,
+          session_id: workingSession.id,
+        },
+        "Found stale active session without tasks"
+      );
 
       await supabase
         .from("task_sessions")
         .update({ status: "failed", generation_locked: false })
         .eq("id", workingSession.id);
+
+      reqLog.warn(
+        {
+          event: "session.failed",
+          session_id: workingSession.id,
+          goal_id: goalId,
+          reason: "active_empty_stale",
+        },
+        "Marked stale active session as failed"
+      );
 
       workingSession = {
         ...workingSession,
@@ -339,7 +376,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
   }
 
   if (!workingSession || workingSession.status === "completed" || workingSession.status === "failed") {
-    console.log("CREATING OR REUSING SESSION FOR STEP");
+    reqLog.info({ event: "session.resolve_or_create", goal_id: goalId }, "Resolving or creating session");
   }
 
   // 2. Get the plan record (need plan.id for session)
@@ -389,6 +426,16 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       status: "active",
       generation_locked: false,
     };
+
+    reqLog.info(
+      {
+        event: "session.reused_failed_primary",
+        session_id: workingSession.id,
+        goal_id: goalId,
+        session_type: "primary",
+      },
+      "Reused failed primary session for retry"
+    );
   }
 
   // Upsert-style recovery path: attempt insert, recover by selecting existing on conflict.
@@ -469,6 +516,15 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       return res.status(500).json({ error: sessionError?.message || "Failed to create session" });
     } else {
       workingSession = insertedSession;
+      reqLog.info(
+        {
+          event: "session.created",
+          session_id: workingSession.id,
+          goal_id: goalId,
+          session_type: resolveSessionType(workingSession.session_type),
+        },
+        "Created task session"
+      );
     }
   }
 
@@ -506,6 +562,17 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(500).json({ error: lockResult.error.message || "Failed to acquire generation lock" });
   }
 
+  if (lockResult.acquired) {
+    reqLog.info(
+      {
+        event: "generation.lock.acquired",
+        session_id: workingSession.id,
+        goal_id: goalId,
+      },
+      "Generation lock acquired"
+    );
+  }
+
   if (!lockResult.acquired) {
     const { data: concurrentTasks } = await supabase
       .from("tasks")
@@ -514,6 +581,16 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       .order("created_at", { ascending: true });
 
     const resolvedTasks = concurrentTasks || [];
+
+    reqLog.info(
+      {
+        event: "generation.lock.skipped",
+        session_id: workingSession.id,
+        goal_id: goalId,
+        concurrent_task_count: resolvedTasks.length,
+      },
+      "Generation lock already held by another request"
+    );
 
     return res.json({
       type: "ACTIVE_SESSION",
@@ -567,13 +644,19 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       ? Math.max(1, difficultyResult.targetDifficulty - 1)
       : difficultyResult.targetDifficulty;
 
-  console.log("[tasks] Difficulty selection", {
-    goal_id: goalId,
-    completion_rate: difficultyResult.metrics.completion_rate,
-    skip_rate: difficultyResult.metrics.skip_rate,
-    chosen_difficulty: difficultyResult.targetDifficulty,
-    used_default: difficultyResult.usedDefault,
-  });
+  reqLog.info(
+    {
+      event: "tasks.generation.started",
+      goal_id: goalId,
+      session_id: workingSession.id,
+      session_type: resolveSessionType(workingSession.session_type),
+      completion_rate: difficultyResult.metrics.completion_rate,
+      skip_rate: difficultyResult.metrics.skip_rate,
+      chosen_difficulty: effectiveTargetDifficulty,
+      used_default: difficultyResult.usedDefault,
+    },
+    "Task generation started"
+  );
 
   let rawTaskCount = 0;
   let duplicatesRemoved = 0;
@@ -615,18 +698,33 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       .update({ status: "failed", generation_locked: false })
       .eq("id", workingSession.id);
 
+    reqLog.error(
+      {
+        event: "session.failed",
+        session_id: workingSession.id,
+        goal_id: goalId,
+        reason: "task_generation_exception",
+        error: generationError?.message,
+      },
+      "Session failed due to generation exception"
+    );
+
     return res.status(500).json({
       error: generationError?.message || "Task generation failed",
     });
   }
 
   if (difficultyBalancedTasks.length < MIN_TASKS || difficultyBalancedTasks.length > MAX_TASKS) {
-    console.error("Task cap enforcement violation", {
-      rawTaskCount,
-      finalTaskCount: difficultyBalancedTasks.length,
-      goalId,
-      stepId: activeStep.id,
-    });
+    reqLog.error(
+      {
+        event: "tasks.generation.cap_violation",
+        raw_task_count: rawTaskCount,
+        final_task_count: difficultyBalancedTasks.length,
+        goal_id: goalId,
+        step_id: activeStep.id,
+      },
+      "Task cap enforcement violation"
+    );
   }
 
   if (workingSession.status !== "active") {
@@ -672,19 +770,34 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       .update({ status: "failed", generation_locked: false })
       .eq("id", workingSession.id);
 
+    reqLog.error(
+      {
+        event: "session.failed",
+        session_id: workingSession.id,
+        goal_id: goalId,
+        reason: "task_insert_failed",
+      },
+      "Session failed due to task insert failure"
+    );
+
     return res.status(500).json({
       error: insertTasksError?.message || "Task generation failed: no tasks inserted",
     });
   }
 
   const finalStoredTaskCount = insertedTasks?.length ?? tasksToInsert.length;
-  console.log("TASK GENERATION COUNTS", {
-    session_id: workingSession.id,
-    rawTaskCount,
-    duplicatesRemoved,
-    finalStoredTaskCount,
-    type_distribution: typeDistribution,
-  });
+  reqLog.info(
+    {
+      event: "tasks.generation.completed",
+      session_id: workingSession.id,
+      goal_id: goalId,
+      task_count: finalStoredTaskCount,
+      raw_task_count: rawTaskCount,
+      duplicates_removed: duplicatesRemoved,
+      type_distribution: typeDistribution,
+    },
+    "Task generation completed"
+  );
 
   await supabase
     .from("task_sessions")
@@ -714,6 +827,7 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
   }
 
   const supabase = getSupabaseClient(req.token!);
+  const reqLog = req.log ?? logger;
 
   let updateData: any = { status };
   const now = getNowISOString();
@@ -729,22 +843,39 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
     updateData.skipped_at = null;
   }
 
-  const { error } = await supabase
-    .from("tasks")
-    .update(updateData)
-    .eq("id", task_id);
+  const { data: atomicUpdateRows, error: atomicUpdateError } = await supabase.rpc(
+    "update_task_if_session_not_completed",
+    {
+      p_task_id: String(task_id),
+      p_status: status,
+      p_completed_at: updateData.completed_at ?? null,
+      p_skipped_at: updateData.skipped_at ?? null,
+    }
+  );
 
-  if (error) {
-    return res.status(500).json({ error: error.message });
+  if (atomicUpdateError) {
+    return res.status(500).json({ error: atomicUpdateError.message });
+  }
+
+  const task = Array.isArray(atomicUpdateRows)
+    ? atomicUpdateRows[0]
+    : atomicUpdateRows;
+
+  if (!task) {
+    const { data: existingTask } = await supabase
+      .from("tasks")
+      .select("id")
+      .eq("id", task_id)
+      .maybeSingle();
+
+    if (!existingTask) {
+      return res.status(404).json({ error: "Task not found" });
+    }
+
+    return res.status(409).json({ error: "Cannot update tasks in a completed session" });
   }
 
   // === STEP COMPLETION CHECK (ALL STEP TASKS) ===
-  const { data: task } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("id", task_id)
-    .single();
-
   if (task?.plan_step_id && task?.session_id) {
     const { data: sessionTasks } = await supabase
       .from("tasks")
@@ -776,12 +907,24 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
       .update({ status: "completed", summary_json: sessionSummary })
       .eq("id", task.session_id);
 
-    console.log("SESSION COMPLETED:", task.session_id);
-    console.log("🔥 CALLING PROGRESSION ENGINE", {
-      goal_id: task.goal_id,
-      task_id: task.id,
-      status: task.status,
-    });
+    reqLog.info(
+      {
+        event: "session.completed",
+        session_id: task.session_id,
+        goal_id: task.goal_id,
+      },
+      "Session completed"
+    );
+
+    reqLog.info(
+      {
+        event: "progression.triggered",
+        goal_id: task.goal_id,
+        task_id: task.id,
+        task_status: task.status,
+      },
+      "Calling progression engine"
+    );
     const stepCompleted = await runProgressionEngine(supabase, task.goal_id);
 
     return res.json({
@@ -808,6 +951,7 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
 
 
   const supabase = getSupabaseClient(req.token!);
+  const reqLog = req.log ?? logger;
 
   // If ?all=true, return ALL tasks for goal regardless of session/date
   if (all === "true") {
@@ -844,11 +988,15 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   const allTodaySessions = sessions || [];
   const session = allTodaySessions.find((item: any) => item.status === "active") || allTodaySessions[0] || null;
 
-  console.log("SESSION CHECK:", {
-    hasSession: !!session,
-    sessionStatus: session?.status,
-    goalId,
-  });
+  reqLog.info(
+    {
+      event: "session.fetch",
+      goal_id: goalId,
+      has_session: !!session,
+      session_status: session?.status,
+    },
+    "Fetched latest session"
+  );
 
   if (session) {
     let query = supabase
@@ -881,6 +1029,16 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
         .update({ status: "failed", generation_locked: false })
         .eq("id", session.id);
 
+      reqLog.warn(
+        {
+          event: "session.failed",
+          session_id: session.id,
+          goal_id: goalId,
+          reason: "active_empty_stale",
+        },
+        "Marked stale active session as failed during fetch"
+      );
+
       return res.json({
           type: "LATEST_SESSION",
           sessionStatus: "failed",
@@ -897,10 +1055,14 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
     }
 
     if (taskCount === 0 && session.status === "completed") {
-      console.warn("[tasks] Found completed session with zero tasks", {
-        goal_id: goalId,
-        session_id: session.id,
-      });
+      reqLog.warn(
+        {
+          event: "session.completed_empty",
+          goal_id: goalId,
+          session_id: session.id,
+        },
+        "Found completed session with zero tasks"
+      );
 
       return res.json({
         type: "NO_SESSION",
@@ -951,6 +1113,7 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
   const today = getLocalDateString();
 
   const supabase = getSupabaseClient(req.token!);
+  const reqLog = req.log ?? logger;
 
   if (!goal_id) {
     return res.status(400).json({ error: "goal_id required" });
@@ -1088,8 +1251,36 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       .limit(1);
 
     let targetSession = existingTargetSessions?.[0] ?? null;
+    const previousTargetSession = targetSession;
+    const shouldCreateNewSession =
+      !targetSession ||
+      targetSession.status === "completed" ||
+      targetSession.status === "failed";
 
-    if (!targetSession) {
+    if (shouldCreateNewSession) {
+      const { data: todaySessions } = await supabase
+        .from("task_sessions")
+        .select("session_type")
+        .eq("goal_id", goal_id)
+        .eq("session_date", today);
+
+      const normalizedTodayTypes = new Set(
+        (todaySessions || []).map((session: any) => resolveSessionType(session.session_type))
+      );
+
+      const sessionTypeForNewSession = !normalizedTodayTypes.has("primary")
+        ? "primary"
+        : !normalizedTodayTypes.has("bonus")
+          ? "bonus"
+          : null;
+
+      if (!sessionTypeForNewSession) {
+        return res.status(409).json({
+          error: "daily_limit_reached",
+          message: "Cannot create adaptation session: daily session limit reached.",
+        });
+      }
+
       const { data: newSession, error: sessionError } = await supabase
         .from("task_sessions")
         .insert({
@@ -1097,29 +1288,53 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
           plan_id: plan.id,
           plan_step_id: activeStep.id,
           session_date: today,
+          session_type: sessionTypeForNewSession,
           status: "active",
         })
         .select()
         .single();
 
-      if (sessionError || !newSession) {
+      if (sessionError?.code === "23505") {
+        const { data: conflictSessions } = await supabase
+          .from("task_sessions")
+          .select("*")
+          .eq("goal_id", goal_id)
+          .eq("plan_step_id", activeStep.id)
+          .eq("session_date", today)
+          .order("created_at", { ascending: false });
+
+        const existingSession =
+          (conflictSessions || []).find((session: any) => session.status === "active") ||
+          conflictSessions?.[0] ||
+          null;
+
+        if (!existingSession) {
+          return res.status(409).json({
+            error: "adapt_retry_required",
+            message: "Concurrent adaptation detected. Please retry.",
+          });
+        }
+
+        targetSession = existingSession;
+      } else if (sessionError || !newSession) {
         return res.status(500).json({ error: sessionError?.message || "Failed to create session" });
+      } else {
+        targetSession = newSession;
       }
 
-      targetSession = newSession;
-    } else if (targetSession.status !== "active") {
-      const { data: reopenedSession, error: reopenError } = await supabase
-        .from("task_sessions")
-        .update({ status: "active" })
-        .eq("id", targetSession.id)
-        .select()
-        .single();
-
-      if (reopenError || !reopenedSession) {
-        return res.status(500).json({ error: reopenError?.message || "Failed to activate session" });
+      if (previousTargetSession && previousTargetSession.status !== "active") {
+        reqLog.info(
+          {
+            event: "session.created",
+            goal_id,
+            previous_session_id: previousTargetSession.id,
+            previous_session_status: previousTargetSession.status,
+            new_session_id: targetSession?.id,
+            session_type: resolveSessionType(targetSession?.session_type),
+          },
+          "Created new adaptation session instead of mutating non-active session"
+        );
       }
-
-      targetSession = reopenedSession;
     }
 
     await supabase
@@ -1145,11 +1360,16 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       .insert(newTasks)
       .select();
 
-    console.log("TASK ADAPTATION COUNTS", {
-      session_id: targetSession.id,
-      finalStoredTaskCount: inserted?.length ?? newTasks.length,
-      type_distribution: adaptedTypeDistribution,
-    });
+    reqLog.info(
+      {
+        event: "tasks.adaptation.completed",
+        goal_id,
+        session_id: targetSession.id,
+        task_count: inserted?.length ?? newTasks.length,
+        type_distribution: adaptedTypeDistribution,
+      },
+      "Task adaptation completed"
+    );
 
     return res.json({
       metrics,

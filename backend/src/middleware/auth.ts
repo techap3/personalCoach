@@ -1,8 +1,11 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import type { Logger } from "pino";
 
 export interface AuthRequest extends Request {
   token?: string;
+  traceId?: string;
+  log?: Logger;
   user?: {
     id: string;
     email?: string;

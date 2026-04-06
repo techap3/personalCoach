@@ -155,6 +155,7 @@ export default function TasksView({
             return (
               <div
                 key={task.id}
+                data-testid={`task-card-${task.id}`}
                 className={`rounded-lg border p-4 transition cursor-pointer ${getTaskStyles(task.status)}`}
                 onClick={() => {
                   setExpandedTaskId((prev) => (prev === task.id ? null : task.id));
@@ -193,6 +194,7 @@ export default function TasksView({
                 {task.status === "pending" && (
                   <div className="flex gap-2 mt-3">
                     <button
+                      data-testid={`task-done-${task.id}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         void markTask(task.id, "done");
@@ -203,6 +205,7 @@ export default function TasksView({
                     </button>
 
                     <button
+                      data-testid={`task-skip-${task.id}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         void markTask(task.id, "skipped");

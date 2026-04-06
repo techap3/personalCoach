@@ -60,6 +60,7 @@ export default function GoalForm({
       <h2 className="text-xl font-semibold mb-2">Create a Goal</h2>
 
       <input
+        data-testid="goal-title-input"
         className="border p-2 rounded w-full mb-2"
         placeholder="Goal (e.g. Get fit)"
         value={title}
@@ -67,6 +68,7 @@ export default function GoalForm({
       />
 
       <textarea
+        data-testid="goal-description-input"
         className="border p-2 rounded w-full mb-2"
         placeholder="Description"
         value={description}
@@ -74,6 +76,7 @@ export default function GoalForm({
       />
 
       <button
+        data-testid="generate-plan-button"
         className="bg-blue-600 text-white p-2 rounded w-full mb-2"
         onClick={createGoal}
         disabled={loading}

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { getSupabaseClient } from "../db/supabase";
 import { generatePlan } from "../services/ai";
+import logger from "../logger";
 
 const router = Router();
 
@@ -34,6 +35,7 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   const { title, description } = req.body;
 
   const supabase = getSupabaseClient(req.token!);
+  const reqLog = req.log ?? logger;
 
   // get user
   const {
@@ -45,7 +47,7 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   try {
     plan = await generatePlan(title);
   } catch (err) {
-    console.error("PLAN ERROR:", err);
+    reqLog.error({ event: "plan.generation.failed", error: err }, "Plan generation failed");
     return res.status(500).json({ error: "Plan generation failed" });
   }
 
@@ -96,7 +98,10 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     .insert(planSteps);
 
   if (stepsError) {
-    console.error("plan_steps insert failed:", stepsError.message);
+    reqLog.error(
+      { event: "plan.steps.insert_failed", error: stepsError.message, goal_id: goal.id },
+      "Plan step insert failed"
+    );
     await rollbackGoalCreation(supabase, goal.id);
     return res.status(500).json({ error: "Failed to create plan steps" });
   }

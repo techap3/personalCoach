@@ -269,6 +269,28 @@ vi.mock("../db/supabase", () => {
     auth: {
       getUser: async () => ({ data: { user: { id: "user-1" } } }),
     },
+    rpc: async (name: string, params: Record<string, any>) => {
+      if (name !== "update_task_if_session_not_completed") {
+        return { data: null, error: { message: `Unknown rpc function: ${name}` } };
+      }
+
+      const taskId = params.p_task_id;
+      const task = state.tables.tasks.find((candidate) => String(candidate.id) === String(taskId));
+      if (!task) {
+        return { data: [], error: null };
+      }
+
+      const session = state.tables.task_sessions.find((candidate) => candidate.id === task.session_id);
+      if (!session || session.status === "completed") {
+        return { data: [], error: null };
+      }
+
+      task.status = params.p_status;
+      task.completed_at = params.p_completed_at ?? null;
+      task.skipped_at = params.p_skipped_at ?? null;
+
+      return { data: [clone(task)], error: null };
+    },
     from: (table: keyof typeof state.tables) => new QueryBuilder(table),
   };
 

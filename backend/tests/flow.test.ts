@@ -4,11 +4,34 @@ import type supertest from "supertest";
 
 const {
   generateAdaptedPlanMock,
+  generateAdaptedTasksMock,
   parseAdaptedPlanMock,
   generatePlanMock,
   generateTasksForStepMock,
 } = vi.hoisted(() => ({
   generateAdaptedPlanMock: vi.fn(async () => "{\"updated_plan\":[]}"),
+  generateAdaptedTasksMock: vi.fn(async () => ({
+    updated_tasks: [
+      {
+        title: "Adapted Task A",
+        description: "Adjusted task A",
+        difficulty: 2,
+        task_type: "learn",
+      },
+      {
+        title: "Adapted Task B",
+        description: "Adjusted task B",
+        difficulty: 2,
+        task_type: "build",
+      },
+      {
+        title: "Adapted Task C",
+        description: "Adjusted task C",
+        difficulty: 3,
+        task_type: "review",
+      },
+    ],
+  })),
   parseAdaptedPlanMock: vi.fn(() => ({
     updated_plan: [
       {
@@ -65,6 +88,10 @@ vi.mock("../src/services/ai/adaptPlan", () => ({
   generateAdaptedPlan: generateAdaptedPlanMock,
 }));
 
+vi.mock("../src/services/ai/adaptTasks", () => ({
+  generateAdaptedTasks: generateAdaptedTasksMock,
+}));
+
 vi.mock("../src/services/ai/adaptParser", () => ({
   parseAdaptedPlan: parseAdaptedPlanMock,
 }));
@@ -76,6 +103,7 @@ vi.mock("../src/db/supabase", () => {
     id: 1,
     failPlanStepsInsert: false,
     forceGenerationLockContention: false,
+    forceTaskSessionInsertConflictOnce: false,
     tables: {
       goals: [] as Row[],
       plans: [] as Row[],
@@ -94,6 +122,7 @@ vi.mock("../src/db/supabase", () => {
     state.id = 1;
     state.failPlanStepsInsert = false;
     state.forceGenerationLockContention = false;
+    state.forceTaskSessionInsertConflictOnce = false;
     state.tables.goals = [];
     state.tables.plans = [];
     state.tables.plan_steps = [];
@@ -244,6 +273,18 @@ vi.mock("../src/db/supabase", () => {
         }
 
         if (this.table === "task_sessions") {
+          if (state.forceTaskSessionInsertConflictOnce) {
+            state.forceTaskSessionInsertConflictOnce = false;
+            return {
+              data: null,
+              error: {
+                message:
+                  'duplicate key value violates unique constraint "task_sessions_goal_session_date_type_key"',
+                code: "23505",
+              },
+            };
+          }
+
           for (const item of this.insertValues) {
             const duplicate = table.find(
               (row) =>
@@ -345,6 +386,28 @@ vi.mock("../src/db/supabase", () => {
     auth: {
       getUser: async () => ({ data: { user: { id: "user-1" } } }),
     },
+    rpc: async (name: string, params: Record<string, any>) => {
+      if (name !== "update_task_if_session_not_completed") {
+        return { data: null, error: { message: `Unknown rpc function: ${name}` } };
+      }
+
+      const taskId = params.p_task_id;
+      const task = state.tables.tasks.find((candidate) => String(candidate.id) === String(taskId));
+      if (!task) {
+        return { data: [], error: null };
+      }
+
+      const session = state.tables.task_sessions.find((candidate) => candidate.id === task.session_id);
+      if (!session || session.status === "completed") {
+        return { data: [], error: null };
+      }
+
+      task.status = params.p_status;
+      task.completed_at = params.p_completed_at ?? null;
+      task.skipped_at = params.p_skipped_at ?? null;
+
+      return { data: [clone(task)], error: null };
+    },
     from: (table: keyof typeof state.tables) => new QueryBuilder(table),
   };
 
@@ -427,8 +490,31 @@ beforeEach(() => {
     },
   ]);
   generateAdaptedPlanMock.mockClear();
+  generateAdaptedTasksMock.mockClear();
   parseAdaptedPlanMock.mockClear();
   generateAdaptedPlanMock.mockImplementation(async () => "{\"updated_plan\":[]}");
+  generateAdaptedTasksMock.mockImplementation(async () => ({
+    updated_tasks: [
+      {
+        title: "Adapted Task A",
+        description: "Adjusted task A",
+        difficulty: 2,
+        task_type: "learn",
+      },
+      {
+        title: "Adapted Task B",
+        description: "Adjusted task B",
+        difficulty: 2,
+        task_type: "build",
+      },
+      {
+        title: "Adapted Task C",
+        description: "Adjusted task C",
+        difficulty: 3,
+        task_type: "review",
+      },
+    ],
+  }));
   parseAdaptedPlanMock.mockImplementation(() => ({
     updated_plan: [
       {
@@ -1128,5 +1214,184 @@ describe("Flow tests", () => {
     });
 
     expect(hasTaskInNonActiveSession).toBe(false);
+  });
+
+  it("creates a new session on adapt when latest step session is completed", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(generated.status).toBe(200);
+
+    for (const task of generated.body.tasks) {
+      await request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: task.id, status: "done" });
+    }
+
+    const completedSessionId = generated.body.session.id;
+    const completedSessionBefore = mockState.tables.task_sessions.find(
+      (session: any) => session.id === completedSessionId
+    );
+    expect(completedSessionBefore?.status).toBe("completed");
+
+    const adaptResponse = await request(app)
+      .post("/tasks/adapt")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(adaptResponse.status).toBe(200);
+    expect(adaptResponse.body.updated_tasks.length).toBeGreaterThan(0);
+
+    const newSessionId = adaptResponse.body.updated_tasks[0].session_id;
+    expect(newSessionId).not.toBe(completedSessionId);
+
+    const completedSessionAfter = mockState.tables.task_sessions.find(
+      (session: any) => session.id === completedSessionId
+    );
+    expect(completedSessionAfter?.status).toBe("completed");
+    expect(
+      mockState.tables.tasks
+        .filter((task: any) => task.session_id === completedSessionId)
+        .every((task: any) => task.status !== "pending")
+    ).toBe(true);
+  });
+
+  it("blocks task update when session is completed", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    for (const task of generated.body.tasks) {
+      await request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: task.id, status: "done" });
+    }
+
+    const blocked = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "pending" });
+
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toMatch(/completed session/i);
+  });
+
+  it("maintains invariant: completed sessions never have pending tasks", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    for (const task of generated.body.tasks) {
+      await request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: task.id, status: "done" });
+    }
+
+    await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "pending" });
+
+    const sessionsById = new Map<string, any>(
+      mockState.tables.task_sessions.map((session: any) => [session.id, session])
+    );
+
+    const invariantViolations = mockState.tables.tasks.filter((task: any) => {
+      const session = sessionsById.get(task.session_id);
+      return session?.status === "completed" && task.status === "pending";
+    });
+
+    expect(invariantViolations).toHaveLength(0);
+  });
+
+  it("prevents invalid completed+pending state under concurrent updates", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "done" });
+
+    await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[1].id, status: "done" });
+
+    const [markDone, revertPending] = await Promise.all([
+      request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: generated.body.tasks[2].id, status: "done" }),
+      request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: generated.body.tasks[2].id, status: "pending" }),
+    ]);
+
+    expect([200, 409]).toContain(markDone.status);
+    expect([200, 409]).toContain(revertPending.status);
+
+    const sessionsById = new Map<string, any>(
+      mockState.tables.task_sessions.map((session: any) => [session.id, session])
+    );
+
+    const invalidCompletedPending = mockState.tables.tasks.filter((task: any) => {
+      const session = sessionsById.get(task.session_id);
+      return session?.status === "completed" && task.status === "pending";
+    });
+
+    expect(invalidCompletedPending).toHaveLength(0);
+  });
+
+  it("does not return 500 under concurrent adapt conflict", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    for (const task of generated.body.tasks) {
+      await request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: task.id, status: "done" });
+    }
+
+    mockState.forceTaskSessionInsertConflictOnce = true;
+
+    const [a, b] = await Promise.all([
+      request(app)
+        .post("/tasks/adapt")
+        .set("Authorization", authHeader())
+        .send({ goal_id: goalId }),
+      request(app)
+        .post("/tasks/adapt")
+        .set("Authorization", authHeader())
+        .send({ goal_id: goalId }),
+    ]);
+
+    expect(a.status).not.toBe(500);
+    expect(b.status).not.toBe(500);
+    expect([200, 409]).toContain(a.status);
+    expect([200, 409]).toContain(b.status);
   });
 });
