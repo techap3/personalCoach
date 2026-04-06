@@ -5,6 +5,30 @@ import { generatePlan } from "../services/ai";
 
 const router = Router();
 
+function isValidPlan(plan: any) {
+  if (!plan || !Array.isArray(plan.plan) || plan.plan.length === 0) {
+    return false;
+  }
+
+  return plan.plan.every((step: any) => {
+    return (
+      typeof step?.title === "string" &&
+      step.title.trim().length > 0 &&
+      typeof step?.description === "string" &&
+      step.description.trim().length > 0 &&
+      typeof step?.difficulty === "number" &&
+      step.difficulty >= 1 &&
+      step.difficulty <= 5
+    );
+  });
+}
+
+async function rollbackGoalCreation(supabase: any, goalId: string) {
+  await supabase.from("plan_steps").delete().eq("goal_id", goalId);
+  await supabase.from("plans").delete().eq("goal_id", goalId);
+  await supabase.from("goals").delete().eq("id", goalId);
+}
+
 
 router.post("/", authMiddleware, async (req: AuthRequest, res) => {
   const { title, description } = req.body;
@@ -16,7 +40,20 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // insert goal
+  // generate + validate plan first so we never persist orphan goals
+  let plan;
+  try {
+    plan = await generatePlan(title);
+  } catch (err) {
+    console.error("PLAN ERROR:", err);
+    return res.status(500).json({ error: "Plan generation failed" });
+  }
+
+  if (!isValidPlan(plan)) {
+    return res.status(500).json({ error: "Plan validation failed" });
+  }
+
+  // persist goal + plan + plan_steps with rollback on any failure
   const { data: goal, error: goalError } = await supabase
     .from("goals")
     .insert([
@@ -29,16 +66,7 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     .select()
     .single();
 
-  if (goalError) return res.status(500).json(goalError);
-
-  // generate plan
-  let plan;
-  try {
-    plan = await generatePlan(title);
-  } catch (err) {
-    console.error("PLAN ERROR:", err); // 👈 ADD THIS
-    return res.status(500).json({ error: "Plan generation failed" });
-  }
+  if (goalError || !goal) return res.status(500).json(goalError || { error: "Goal creation failed" });
 
   // store plan
   const { data: planRecord, error: planError } = await supabase
@@ -47,28 +75,30 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
     .select()
     .single();
 
-  if (planError) return res.status(500).json(planError);
+  if (planError || !planRecord) {
+    await rollbackGoalCreation(supabase, goal.id);
+    return res.status(500).json(planError || { error: "Plan persistence failed" });
+  }
 
   // insert plan_steps so the progression engine can track them
-  if (Array.isArray(plan?.plan)) {
-    const planSteps = plan.plan.map((step: any, index: number) => ({
-      plan_id: planRecord.id,
-      goal_id: goal.id,
-      step_index: index,
-      title: step.title,
-      description: step.description,
-      difficulty: step.difficulty,
-      status: index === 0 ? "active" : "pending",
-    }));
+  const planSteps = plan.plan.map((step: any, index: number) => ({
+    plan_id: planRecord.id,
+    goal_id: goal.id,
+    step_index: index,
+    title: step.title,
+    description: step.description,
+    difficulty: step.difficulty,
+    status: index === 0 ? "active" : "pending",
+  }));
 
-    const { error: stepsError } = await supabase
-      .from("plan_steps")
-      .insert(planSteps);
+  const { error: stepsError } = await supabase
+    .from("plan_steps")
+    .insert(planSteps);
 
-    if (stepsError) {
-      console.error("⚠️  plan_steps insert failed:", stepsError.message);
-      // non-fatal – plan is still usable
-    }
+  if (stepsError) {
+    console.error("plan_steps insert failed:", stepsError.message);
+    await rollbackGoalCreation(supabase, goal.id);
+    return res.status(500).json({ error: "Failed to create plan steps" });
   }
 
   res.json({ goal, plan });

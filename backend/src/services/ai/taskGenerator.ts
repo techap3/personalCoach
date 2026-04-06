@@ -73,13 +73,20 @@ export async function generateTasksForStep(step: {
   difficulty: number;
 }, options?: {
   previousTasks?: string[];
+  targetDifficulty?: number;
 }): Promise<GeneratedTask[]> {
   const client = getAIClient();
   const model = process.env.AI_MODEL || "meta-llama/llama-3-8b-instruct";
 
   const response = await client.chat.completions.create({
     model,
-    messages: buildStepTaskPrompt(step, options?.previousTasks || []),
+    messages: buildStepTaskPrompt(
+      {
+        ...step,
+        difficulty: options?.targetDifficulty ?? step.difficulty,
+      },
+      options?.previousTasks || []
+    ),
   });
 
   const raw = response.choices[0]?.message?.content || "";

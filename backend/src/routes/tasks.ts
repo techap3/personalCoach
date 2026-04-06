@@ -4,6 +4,7 @@ import { getSupabaseClient } from "../db/supabase";
 import { generateTasksForStep } from "../services/ai/taskGenerator";
 import {
   enforceTaskCount,
+  enforceTargetDifficulty,
   getTaskTypeDistribution,
   MIN_TASKS,
   MAX_TASKS,
@@ -20,9 +21,12 @@ import {
   updateUserMemory,
   getUserMemory,
 } from "../services/memory/userMemory";
+import { getTargetDifficulty } from "../services/difficultyService";
+import { generateSessionSummary } from "../services/sessionSummary";
 
 const router = Router();
 const RECENT_SESSION_LOOKBACK = 5;
+const ALLOWED_TASK_STATUSES = new Set(["pending", "done", "skipped"]);
 
 /* =========================
    HELPERS
@@ -143,22 +147,42 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     stepId: activeStep.id,
   });
 
-  if (session && session.status === "active") {
+  let workingSession = session;
+
+  if (workingSession && workingSession.status === "active") {
     const { data: tasks } = await supabase
       .from("tasks")
       .select("*")
-      .eq("session_id", session.id)
+      .eq("session_id", workingSession.id)
       .order("created_at", { ascending: true });
 
-    return res.json({
-      type: "ACTIVE_SESSION",
-      session,
-      tasks: tasks || [],
-    });
+    if ((tasks || []).length === 0) {
+      console.warn("[tasks] Found active session without tasks, marking failed for recovery", {
+        goal_id: goalId,
+        step_id: activeStep.id,
+        session_id: workingSession.id,
+      });
+
+      await supabase
+        .from("task_sessions")
+        .update({ status: "failed" })
+        .eq("id", workingSession.id);
+
+      workingSession = {
+        ...workingSession,
+        status: "failed",
+      };
+    } else {
+      return res.json({
+        type: "ACTIVE_SESSION",
+        session: workingSession,
+        tasks: tasks || [],
+      });
+    }
   }
 
-  if (!session || session.status === "completed") {
-    console.log("CREATING NEW SESSION FOR STEP");
+  if (!workingSession || workingSession.status === "completed" || workingSession.status === "failed") {
+    console.log("CREATING OR REUSING SESSION FOR STEP");
   }
 
   // 2. Get the plan record (need plan.id for session)
@@ -172,21 +196,82 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "No plan found" });
   }
 
-  // No session exists -> create a new session
-  const { data: newSession, error: sessionError } = await supabase
-    .from("task_sessions")
-    .insert({
-      goal_id: goalId,
-      plan_id: plan.id,
-      plan_step_id: activeStep.id,
-      session_date: today,
-      status: "active",
-    })
-    .select()
-    .single();
+  // Upsert-style recovery path: attempt insert, recover by selecting existing on conflict.
+  if (!workingSession || workingSession.status !== "active") {
+    const { data: insertedSession, error: sessionError } = await supabase
+      .from("task_sessions")
+      .insert({
+        goal_id: goalId,
+        plan_id: plan.id,
+        plan_step_id: activeStep.id,
+        session_date: today,
+        status: "active",
+      })
+      .select()
+      .single();
 
-  if (sessionError || !newSession) {
-    return res.status(500).json({ error: sessionError?.message || "Failed to create session" });
+    if (sessionError?.code === "23505") {
+      const { data: existingSession } = await supabase
+        .from("task_sessions")
+        .select("*")
+        .eq("goal_id", goalId)
+        .eq("plan_step_id", activeStep.id)
+        .eq("session_date", today)
+        .maybeSingle();
+
+      if (!existingSession) {
+        return res.status(500).json({ error: "Session conflict detected but no session found" });
+      }
+
+      if (existingSession.status !== "active") {
+        const { data: existingSessionTasks } = await supabase
+          .from("tasks")
+          .select("*")
+          .eq("session_id", existingSession.id)
+          .order("created_at", { ascending: true });
+
+        return res.json({
+          type: "LATEST_SESSION",
+          sessionStatus: existingSession.status,
+          session: existingSession,
+          tasks: existingSessionTasks || [],
+        });
+      }
+
+      workingSession = existingSession;
+    } else if (sessionError || !insertedSession) {
+      return res.status(500).json({ error: sessionError?.message || "Failed to create session" });
+    } else {
+      workingSession = insertedSession;
+    }
+  }
+
+  if (!workingSession) {
+    return res.status(500).json({ error: "Failed to resolve active session" });
+  }
+
+  // If conflict reused an active session that already has tasks, reuse it.
+  if (workingSession.status === "active") {
+    const { data: existingSessionTasks } = await supabase
+      .from("tasks")
+      .select("*")
+      .eq("session_id", workingSession.id)
+      .order("created_at", { ascending: true });
+
+    if ((existingSessionTasks || []).length > 0) {
+      return res.json({
+        type: "ACTIVE_SESSION",
+        sessionStatus: "active",
+        session: workingSession,
+        tasks: existingSessionTasks,
+      });
+    }
+
+    // Session exists but empty, recover by generating into the same session.
+    await supabase
+      .from("task_sessions")
+      .update({ status: "active" })
+      .eq("id", workingSession.id);
   }
 
   // Generate tasks only after session creation
@@ -194,7 +279,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     .from("task_sessions")
     .select("id")
     .eq("goal_id", goalId)
-    .neq("id", newSession.id)
+    .neq("id", workingSession.id)
     .order("created_at", { ascending: false })
     .limit(RECENT_SESSION_LOOKBACK);
 
@@ -216,37 +301,89 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     recentTaskTitles.map((title) => normalizeTaskTitle(title)).filter(Boolean)
   );
 
-  const aiTasks = await generateTasksForStep(activeStep, {
-    previousTasks: recentTaskTitles,
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const difficultyResult = await getTargetDifficulty(supabase, userId, goalId, {
+    lookbackSessions: RECENT_SESSION_LOOKBACK,
+    defaultDifficulty: 2,
+    currentDifficulty: activeStep.difficulty,
   });
 
-  const rawTaskCount = Array.isArray(aiTasks) ? aiTasks.length : 0;
-  const sanitizedTasks = sanitizeGeneratedTasks(aiTasks);
-  const { tasks: dedupedTasks, removedCount: duplicatesRemoved } = filterDuplicateTasks(
-    sanitizedTasks,
-    recentNormalizedTitles
-  );
-
-  const generatedTasks = enforceTaskCount(dedupedTasks, {
-    stepTitle: activeStep.title,
-    blockedNormalizedTitles: recentNormalizedTitles,
+  console.log("[tasks] Difficulty selection", {
+    goal_id: goalId,
+    completion_rate: difficultyResult.metrics.completion_rate,
+    skip_rate: difficultyResult.metrics.skip_rate,
+    chosen_difficulty: difficultyResult.targetDifficulty,
+    used_default: difficultyResult.usedDefault,
   });
 
-  const typeDistribution = getTaskTypeDistribution(generatedTasks);
+  let rawTaskCount = 0;
+  let duplicatesRemoved = 0;
+  let difficultyBalancedTasks: any[] = [];
+  let typeDistribution = {
+    action: 0,
+    learn: 0,
+    reflect: 0,
+    review: 0,
+  };
 
-  if (generatedTasks.length < MIN_TASKS || generatedTasks.length > MAX_TASKS) {
+  try {
+    const aiTasks = await generateTasksForStep(activeStep, {
+      previousTasks: recentTaskTitles,
+      targetDifficulty: difficultyResult.targetDifficulty,
+    });
+
+    rawTaskCount = Array.isArray(aiTasks) ? aiTasks.length : 0;
+    const sanitizedTasks = sanitizeGeneratedTasks(aiTasks);
+    const dedupResult = filterDuplicateTasks(
+      sanitizedTasks,
+      recentNormalizedTitles
+    );
+    duplicatesRemoved = dedupResult.removedCount;
+
+    const generatedTasks = enforceTaskCount(dedupResult.tasks, {
+      stepTitle: activeStep.title,
+      blockedNormalizedTitles: recentNormalizedTitles,
+    });
+    difficultyBalancedTasks = enforceTargetDifficulty(
+      generatedTasks,
+      difficultyResult.targetDifficulty
+    );
+
+    typeDistribution = getTaskTypeDistribution(difficultyBalancedTasks);
+  } catch (generationError: any) {
+    await supabase
+      .from("task_sessions")
+      .update({ status: "failed" })
+      .eq("id", workingSession.id);
+
+    return res.status(500).json({
+      error: generationError?.message || "Task generation failed",
+    });
+  }
+
+  if (difficultyBalancedTasks.length < MIN_TASKS || difficultyBalancedTasks.length > MAX_TASKS) {
     console.error("Task cap enforcement violation", {
       rawTaskCount,
-      finalTaskCount: generatedTasks.length,
+      finalTaskCount: difficultyBalancedTasks.length,
       goalId,
       stepId: activeStep.id,
     });
   }
 
-  const tasksToInsert = generatedTasks.map((t: any) => ({
+  if (workingSession.status !== "active") {
+    return res.status(500).json({
+      error: `Cannot insert tasks into non-active session: ${workingSession.status}`,
+    });
+  }
+
+  const tasksToInsert = difficultyBalancedTasks.map((t: any) => ({
     goal_id: goalId,
     plan_step_id: activeStep.id,
-    session_id: newSession.id,
+    session_id: workingSession.id,
     title: t.title,
     description: t.description,
     difficulty: t.difficulty,
@@ -264,14 +401,25 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
   }
 
 
-  const { data: insertedTasks } = await supabase
+  const { data: insertedTasks, error: insertTasksError } = await supabase
     .from("tasks")
     .insert(tasksToInsert)
     .select();
 
+  if (insertTasksError || (insertedTasks || []).length === 0) {
+    await supabase
+      .from("task_sessions")
+      .update({ status: "failed" })
+      .eq("id", workingSession.id);
+
+    return res.status(500).json({
+      error: insertTasksError?.message || "Task generation failed: no tasks inserted",
+    });
+  }
+
   const finalStoredTaskCount = insertedTasks?.length ?? tasksToInsert.length;
   console.log("TASK GENERATION COUNTS", {
-    session_id: newSession.id,
+    session_id: workingSession.id,
     rawTaskCount,
     duplicatesRemoved,
     finalStoredTaskCount,
@@ -280,7 +428,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
 
   return res.json({
     type: "NEW_SESSION",
-    session: newSession,
+    session: workingSession,
     tasks: insertedTasks || tasksToInsert,
   });
 });
@@ -293,6 +441,10 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
 
   if (!task_id || !status) {
     return res.status(400).json({ error: "task_id and status required" });
+  }
+
+  if (!ALLOWED_TASK_STATUSES.has(status)) {
+    return res.status(400).json({ error: "Invalid status. Allowed: pending, done, skipped" });
   }
 
   const supabase = getSupabaseClient(req.token!);
@@ -351,9 +503,11 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
+    const sessionSummary = await generateSessionSummary(task.session_id, supabase);
+
     await supabase
       .from("task_sessions")
-      .update({ status: "completed" })
+      .update({ status: "completed", summary_json: sessionSummary })
       .eq("id", task.session_id);
 
     console.log("SESSION COMPLETED:", task.session_id);
@@ -368,6 +522,8 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
       success: true,
       sessionCompleted: true,
       stepCompleted,
+      session_summary: sessionSummary,
+      message: sessionSummary.message,
     });
   }
 
@@ -455,8 +611,34 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
     const { data: tasks, error } = await query;
     if (error) return res.status(500).json(error);
 
+    const taskCount = tasks?.length ?? 0;
+    if (taskCount === 0 && session.status === "active") {
+      await supabase
+        .from("task_sessions")
+        .update({ status: "failed" })
+        .eq("id", session.id);
+
+      return res.json({
+        type: "NO_SESSION",
+        tasks: [],
+      });
+    }
+
+    if (taskCount === 0 && session.status === "completed") {
+      console.warn("[tasks] Found completed session with zero tasks", {
+        goal_id: goalId,
+        session_id: session.id,
+      });
+
+      return res.json({
+        type: "NO_SESSION",
+        tasks: [],
+      });
+    }
+
     return res.json({
       type: session.status === "active" ? "ACTIVE_SESSION" : "LATEST_SESSION",
+      sessionStatus: session.status,
       session,
       tasks: tasks || [],
     });
@@ -464,6 +646,7 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
 
   return res.json({
     type: "NO_SESSION",
+    sessionStatus: "none",
     tasks: [],
   });
 });

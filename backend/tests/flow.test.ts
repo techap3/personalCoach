@@ -2,7 +2,12 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 import type supertest from "supertest";
 
-const { generateAdaptedPlanMock, parseAdaptedPlanMock } = vi.hoisted(() => ({
+const {
+  generateAdaptedPlanMock,
+  parseAdaptedPlanMock,
+  generatePlanMock,
+  generateTasksForStepMock,
+} = vi.hoisted(() => ({
   generateAdaptedPlanMock: vi.fn(async () => "{\"updated_plan\":[]}"),
   parseAdaptedPlanMock: vi.fn(() => ({
     updated_plan: [
@@ -18,10 +23,7 @@ const { generateAdaptedPlanMock, parseAdaptedPlanMock } = vi.hoisted(() => ({
       },
     ],
   })),
-}));
-
-vi.mock("../src/services/ai", () => ({
-  generatePlan: async () => ({
+  generatePlanMock: vi.fn(async () => ({
     plan: [
       {
         id: "step-1",
@@ -36,11 +38,8 @@ vi.mock("../src/services/ai", () => ({
         difficulty: 2,
       },
     ],
-  }),
-}));
-
-vi.mock("../src/services/ai/taskGenerator", () => ({
-  generateTasksForStep: async () => [
+  })),
+  generateTasksForStepMock: vi.fn(async () => [
     {
       title: "Task A",
       description: "Do Task A",
@@ -51,7 +50,15 @@ vi.mock("../src/services/ai/taskGenerator", () => ({
       description: "Do Task B",
       difficulty: 2,
     },
-  ],
+  ]),
+}));
+
+vi.mock("../src/services/ai", () => ({
+  generatePlan: generatePlanMock,
+}));
+
+vi.mock("../src/services/ai/taskGenerator", () => ({
+  generateTasksForStep: generateTasksForStepMock,
 }));
 
 vi.mock("../src/services/ai/adaptPlan", () => ({
@@ -67,6 +74,7 @@ vi.mock("../src/db/supabase", () => {
 
   const state = {
     id: 1,
+    failPlanStepsInsert: false,
     tables: {
       goals: [] as Row[],
       plans: [] as Row[],
@@ -83,6 +91,7 @@ vi.mock("../src/db/supabase", () => {
 
   const reset = () => {
     state.id = 1;
+    state.failPlanStepsInsert = false;
     state.tables.goals = [];
     state.tables.plans = [];
     state.tables.plan_steps = [];
@@ -121,6 +130,12 @@ vi.mock("../src/db/supabase", () => {
     update(values: Row) {
       this.action = "update";
       this.updateValues = values;
+      return this;
+    }
+
+    delete() {
+      this.action = "update";
+      this.updateValues = { __delete: true };
       return this;
     }
 
@@ -219,6 +234,13 @@ vi.mock("../src/db/supabase", () => {
       const table = state.tables[this.table];
 
       if (this.action === "insert") {
+        if (this.table === "plan_steps" && state.failPlanStepsInsert) {
+          return {
+            data: null,
+            error: { message: "simulated plan_steps failure" },
+          };
+        }
+
         if (this.table === "task_sessions") {
           for (const item of this.insertValues) {
             const duplicate = table.find(
@@ -257,6 +279,18 @@ vi.mock("../src/db/supabase", () => {
 
       if (this.action === "update") {
         const filtered = this.applyFilters(table);
+
+        if ((this.updateValues as any).__delete) {
+          const remaining = table.filter(
+            (row) => !filtered.some((candidate) => candidate.id === row.id)
+          );
+          state.tables[this.table] = remaining as any;
+          return {
+            data: this.returnMutatedRows ? clone(filtered) : null,
+            error: null,
+          };
+        }
+
         const updated = filtered.map((row) => {
           Object.assign(row, this.updateValues);
           return clone(row);
@@ -338,6 +372,36 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetMockDb();
+  generatePlanMock.mockClear();
+  generateTasksForStepMock.mockClear();
+  generatePlanMock.mockImplementation(async () => ({
+    plan: [
+      {
+        id: "step-1",
+        title: "Step 1",
+        description: "First step",
+        difficulty: 1,
+      },
+      {
+        id: "step-2",
+        title: "Step 2",
+        description: "Second step",
+        difficulty: 2,
+      },
+    ],
+  }));
+  generateTasksForStepMock.mockImplementation(async () => [
+    {
+      title: "Task A",
+      description: "Do Task A",
+      difficulty: 1,
+    },
+    {
+      title: "Task B",
+      description: "Do Task B",
+      difficulty: 2,
+    },
+  ]);
   generateAdaptedPlanMock.mockClear();
   parseAdaptedPlanMock.mockClear();
   generateAdaptedPlanMock.mockImplementation(async () => "{\"updated_plan\":[]}");
@@ -553,5 +617,214 @@ describe("Flow tests", () => {
     );
 
     expect(activeSessionAfter?.id).toBe(activeSessionBefore?.id);
+  });
+
+  it("creates only one session under concurrent generation calls", async () => {
+    const goalId = await createGoal();
+
+    const [a, b] = await Promise.all([
+      request(app)
+        .post("/tasks/generate")
+        .set("Authorization", authHeader())
+        .send({ goal_id: goalId }),
+      request(app)
+        .post("/tasks/generate")
+        .set("Authorization", authHeader())
+        .send({ goal_id: goalId }),
+    ]);
+
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+
+    const sessions = mockState.tables.task_sessions.filter((s: any) => s.goal_id === goalId);
+    expect(sessions).toHaveLength(1);
+  });
+
+  it("rolls back goal creation when plan_steps insert fails", async () => {
+    mockState.failPlanStepsInsert = true;
+
+    const response = await request(app)
+      .post("/goals")
+      .set("Authorization", authHeader())
+      .send({ title: "Rollback goal", description: "Should rollback" });
+
+    expect(response.status).toBe(500);
+    expect(mockState.tables.goals).toHaveLength(0);
+    expect(mockState.tables.plans).toHaveLength(0);
+    expect(mockState.tables.plan_steps).toHaveLength(0);
+  });
+
+  it("rejects invalid task status at API boundary", async () => {
+    const goalId = await createGoal();
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const response = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "invalid-status" });
+
+    expect(response.status).toBe(400);
+  });
+
+  it("does not leave an active zero-task session when generation fails", async () => {
+    const goalId = await createGoal();
+    generateTasksForStepMock.mockImplementationOnce(async () => {
+      throw new Error("simulated generation failure");
+    });
+
+    const failed = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(failed.status).toBe(500);
+
+    const sessions = mockState.tables.task_sessions.filter((s: any) => s.goal_id === goalId);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.status).toBe("failed");
+
+    const activeEmpty = sessions.find((session: any) => {
+      if (session.status !== "active") return false;
+      const tasks = mockState.tables.tasks.filter((task: any) => task.session_id === session.id);
+      return tasks.length === 0;
+    });
+
+    expect(activeEmpty).toBeUndefined();
+  });
+
+  it("returns deterministic session summary when a session completes", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(generated.status).toBe(200);
+
+    await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "done" });
+
+    await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[1].id, status: "done" });
+
+    const finalUpdate = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[2].id, status: "skipped" });
+
+    expect(finalUpdate.status).toBe(200);
+    expect(finalUpdate.body.sessionCompleted).toBe(true);
+    expect(finalUpdate.body.session_summary).toEqual({
+      completed: 2,
+      skipped: 1,
+      completion_rate: 0.67,
+      message: "Good effort. Try to complete a bit more tomorrow.",
+    });
+  });
+
+  it("does not attach new tasks to a completed conflict session", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = new Date().toISOString().split("T")[0];
+
+    mockState.tables.task_sessions.push({
+      id: "completed-conflict-session",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      status: "completed",
+      created_at: new Date().toISOString(),
+    });
+
+    mockState.tables.tasks.push({
+      id: "completed-conflict-task",
+      goal_id: goalId,
+      plan_step_id: step1.id,
+      session_id: "completed-conflict-session",
+      title: "Existing completed task",
+      description: "Already done",
+      difficulty: 2,
+      task_type: "learn",
+      status: "done",
+      created_at: new Date().toISOString(),
+    });
+
+    const beforeCount = mockState.tables.tasks.length;
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.type).toBe("LATEST_SESSION");
+    expect(response.body.sessionStatus).toBe("completed");
+    expect(response.body.session.id).toBe("completed-conflict-session");
+    expect(mockState.tables.tasks.length).toBe(beforeCount);
+  });
+
+  it("retry generate after completed conflict still does not reuse for insertion", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = new Date().toISOString().split("T")[0];
+
+    mockState.tables.task_sessions.push({
+      id: "completed-conflict-session-2",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      status: "completed",
+      created_at: new Date().toISOString(),
+    });
+
+    const first = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const beforeRetryCount = mockState.tables.tasks.length;
+
+    const second = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.type).toBe("LATEST_SESSION");
+    expect(second.body.type).toBe("LATEST_SESSION");
+    expect(mockState.tables.tasks.length).toBe(beforeRetryCount);
+  });
+
+  it("inserts tasks only into active sessions", async () => {
+    const goalId = await createGoal();
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+
+    const sessionsById = new Map(
+      mockState.tables.task_sessions.map((session: any) => [session.id, session])
+    );
+
+    const hasTaskInNonActiveSession = mockState.tables.tasks.some((task: any) => {
+      const session = sessionsById.get(task.session_id);
+      return session && session.status !== "active";
+    });
+
+    expect(hasTaskInNonActiveSession).toBe(false);
   });
 });
