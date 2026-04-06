@@ -1,0 +1,11 @@
+{
+  "name": "ai-personal-coach",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r dev",
+    "dev:frontend": "pnpm --filter frontend dev",
+    "dev:backend": "pnpm --filter backend dev",
+    "build": "pnpm -r build",
+    "test:e2e": "pnpm --filter e2e test"
+  }
+}

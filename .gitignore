@@ -1,6 +1,10 @@
-frontend/test-results/
 node_modules
+.pnpm-store
 .env
+frontend/test-results
+apps/frontend/test-results
+e2e/test-results
+playwright-report
 .next
 dist
 *.log

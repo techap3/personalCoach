@@ -1,0 +1,10 @@
+{
+  "name": "e2e",
+  "private": true,
+  "devDependencies": {
+    "@playwright/test": "latest"
+  },
+  "scripts": {
+    "test": "playwright test"
+  }
+}
