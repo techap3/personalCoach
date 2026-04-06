@@ -177,14 +177,24 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     .order("created_at", { ascending: true });
 
   const todaySessions = existingSessions || [];
+  const hasPrimary = todaySessions.some(
+    (session: any) => resolveSessionType(session.session_type) === "primary"
+  );
+  const hasBonus = todaySessions.some(
+    (session: any) => resolveSessionType(session.session_type) === "bonus"
+  );
   const activeTodaySession = todaySessions.find((session: any) => session.status === "active") ?? null;
+  const failedPrimarySession = todaySessions.find(
+    (session: any) =>
+      resolveSessionType(session.session_type) === "primary" && session.status === "failed"
+  ) ?? null;
   const latestTodaySession = todaySessions[todaySessions.length - 1] ?? null;
 
   if (todaySessions.length > DAILY_SESSION_LIMIT) {
     console.warn("More sessions than expected for a goal/day", { goalId, today, count: todaySessions.length });
   }
 
-  let workingSession = activeTodaySession;
+  let workingSession = activeTodaySession ?? failedPrimarySession;
 
   if (workingSession) {
     const { data: todaySessionTasks } = await supabase
@@ -343,10 +353,14 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "No plan found" });
   }
 
-  const sessionTypeForNewSession: SessionType =
-    todaySessions.length === 0 ? "primary" : todaySessions.length === 1 ? "bonus" : "bonus";
+  let sessionTypeForNewSession: SessionType | null = null;
+  if (!hasPrimary) {
+    sessionTypeForNewSession = "primary";
+  } else if (!hasBonus) {
+    sessionTypeForNewSession = "bonus";
+  }
 
-  if (!workingSession && todaySessions.length >= DAILY_SESSION_LIMIT) {
+  if (!workingSession && sessionTypeForNewSession === null) {
     const fallbackSession = latestTodaySession;
     const fallbackMeta = fallbackSession ? buildSessionResponseMeta(fallbackSession) : {
       sessionStatus: "completed",
@@ -364,8 +378,36 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     });
   }
 
+  if (workingSession?.status === "failed" && resolveSessionType(workingSession.session_type) === "primary") {
+    await supabase
+      .from("task_sessions")
+      .update({ status: "active", generation_locked: false })
+      .eq("id", workingSession.id);
+
+    workingSession = {
+      ...workingSession,
+      status: "active",
+      generation_locked: false,
+    };
+  }
+
   // Upsert-style recovery path: attempt insert, recover by selecting existing on conflict.
   if (!workingSession || workingSession.status !== "active") {
+    if (!sessionTypeForNewSession) {
+      return res.status(409).json({
+        error: "daily_limit_reached",
+        type: "LATEST_SESSION",
+        ...(latestTodaySession ? buildSessionResponseMeta(latestTodaySession) : {
+          sessionStatus: "completed",
+          sessionType: "bonus",
+          sessionCompleted: true,
+          summary: null,
+        }),
+        session: latestTodaySession,
+        tasks: [],
+      });
+    }
+
     const { data: insertedSession, error: sessionError } = await supabase
       .from("task_sessions")
       .insert({
@@ -471,11 +513,14 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       .eq("session_id", workingSession.id)
       .order("created_at", { ascending: true });
 
+    const resolvedTasks = concurrentTasks || [];
+
     return res.json({
       type: "ACTIVE_SESSION",
+      status: resolvedTasks.length === 0 ? "generation_in_progress" : undefined,
       ...buildSessionResponseMeta(workingSession),
       session: workingSession,
-      tasks: concurrentTasks || [],
+      tasks: resolvedTasks,
     });
   }
 

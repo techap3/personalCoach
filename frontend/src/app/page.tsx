@@ -86,6 +86,7 @@ export default function Home() {
   const [stepCompleted, setStepCompleted] = useState(false);
   const [planCompleted, setPlanCompleted] = useState(false);
   const [generatingTasks, setGeneratingTasks] = useState(false);
+  const [generationInProgress, setGenerationInProgress] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
 
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
@@ -157,6 +158,7 @@ export default function Home() {
     setStepCompleted(false);
     setPlanCompleted(false);
     setGeneratingTasks(false);
+    setGenerationInProgress(false);
     setGenerateError(null);
   };
 
@@ -179,6 +181,7 @@ export default function Home() {
       const responseType = data?.type;
       const responseSessionStatus = data?.sessionStatus || data?.session?.status;
       const responseSessionType = data?.sessionType || data?.session?.session_type || "primary";
+      const responseProgressStatus = data?.status;
       const explicitCompleted =
         data?.sessionCompleted === true ||
         (responseType === "LATEST_SESSION" && responseSessionStatus === "completed");
@@ -196,6 +199,7 @@ export default function Home() {
         setStepCompleted(false);
         setLatestSessionStatus("completed");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setTodayTasks([]);
         return [] as Task[];
       }
@@ -205,15 +209,19 @@ export default function Home() {
       if (responseType === "ACTIVE_SESSION" || responseSessionStatus === "active") {
         setLatestSessionStatus("active");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(responseProgressStatus === "generation_in_progress");
       } else if (responseSessionStatus === "failed") {
         setLatestSessionStatus("failed");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
       } else if (responseType === "LATEST_SESSION" && responseSessionStatus === "completed") {
         setLatestSessionStatus("completed");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
       } else if (responseType === "NO_SESSION") {
         setLatestSessionStatus("none");
         setLatestSessionType("primary");
+        setGenerationInProgress(false);
       }
 
       if (explicitCompleted) {
@@ -229,6 +237,7 @@ export default function Home() {
         }
         setLatestSessionStatus("completed");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setTodayTasks([]);
         return [] as Task[];
       }
@@ -238,6 +247,7 @@ export default function Home() {
         setSessionSummary(null);
         setLatestSessionStatus("active");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(responseProgressStatus === "generation_in_progress");
       }
 
       if (explicitFailed) {
@@ -246,6 +256,7 @@ export default function Home() {
         setLatestSessionStatus("failed");
         setLatestSessionType(responseSessionType === "bonus" ? "bonus" : "primary");
         setGenerateError("Last session failed to generate tasks. Retry to start a fresh session.");
+        setGenerationInProgress(false);
         setTodayTasks([]);
         return [] as Task[];
       }
@@ -477,21 +488,25 @@ export default function Home() {
       if (payload?.type === "ACTIVE_SESSION") {
         setLatestSessionStatus("active");
         setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(payload?.status === "generation_in_progress");
         setSessionCompletedMessage(null);
         setSessionSummary(null);
       } else if (payload?.type === "NEW_SESSION") {
         setLatestSessionStatus("active");
         setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
       } else if (payload?.type === "LATEST_SESSION" && payload?.sessionStatus === "completed") {
         // Guard against accidentally continuing a completed session when a new one was requested.
         setLatestSessionStatus("completed");
         setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setGenerateError("Unable to start a new session yet. Previous session is already completed.");
       } else if (payload?.sessionStatus === "failed") {
         setLatestSessionStatus("failed");
         setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setGenerateError("Last session failed to generate tasks. Retry to continue.");
       }
 
@@ -511,6 +526,7 @@ export default function Home() {
         setSessionSummary(payload.session_summary || null);
         setLatestSessionStatus("completed");
         setLatestSessionType(payload?.sessionType === "bonus" ? "bonus" : "primary");
+        setGenerationInProgress(false);
         setTodayTasks([]);
         await fetchAllGoalTasks(goalId);
         await fetchAllTasks();
@@ -582,6 +598,7 @@ export default function Home() {
     setGeneratingTasks(false);
     setLatestSessionStatus("none");
     setLatestSessionType("primary");
+    setGenerationInProgress(false);
     setGoalId(goal.id);
     setActiveStepIndex(0);
     setViewMode("plan");
@@ -594,6 +611,7 @@ export default function Home() {
     setSessionSummary(null);
     setLatestSessionStatus("none");
     setLatestSessionType("primary");
+    setGenerationInProgress(false);
     setStepCompleted(false);
     setGoalId(null);
     setPlan(null);
@@ -1266,6 +1284,10 @@ export default function Home() {
                 );
               })()}
             </>
+          ) : generationInProgress ? (
+            <div className="text-sm text-gray-600 dark:text-gray-300">
+              Tasks are being generated. Please wait a moment...
+            </div>
           ) : (
             <div className="text-sm text-gray-600 dark:text-gray-300">
               Your active tasks will appear here.

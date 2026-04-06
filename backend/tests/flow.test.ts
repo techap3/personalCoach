@@ -75,6 +75,7 @@ vi.mock("../src/db/supabase", () => {
   const state = {
     id: 1,
     failPlanStepsInsert: false,
+    forceGenerationLockContention: false,
     tables: {
       goals: [] as Row[],
       plans: [] as Row[],
@@ -92,6 +93,7 @@ vi.mock("../src/db/supabase", () => {
   const reset = () => {
     state.id = 1;
     state.failPlanStepsInsert = false;
+    state.forceGenerationLockContention = false;
     state.tables.goals = [];
     state.tables.plans = [];
     state.tables.plan_steps = [];
@@ -282,6 +284,18 @@ vi.mock("../src/db/supabase", () => {
 
       if (this.action === "update") {
         const filtered = this.applyFilters(table);
+
+        if (
+          this.table === "task_sessions" &&
+          state.forceGenerationLockContention &&
+          this.updateValues?.generation_locked === true &&
+          this.filters.some((filter) => filter.op === "eq" && filter.field === "generation_locked" && filter.value === false)
+        ) {
+          return {
+            data: this.returnMutatedRows ? [] : null,
+            error: null,
+          };
+        }
 
         if ((this.updateValues as any).__delete) {
           const remaining = table.filter(
@@ -874,6 +888,56 @@ describe("Flow tests", () => {
 
     const updated = mockState.tables.task_sessions.find((s: any) => s.id === "stale-active-session-test");
     expect(updated?.status).toBe("failed");
+  });
+
+  it("reuses failed primary session instead of creating bonus", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = getLocalDateString();
+
+    mockState.tables.task_sessions.push({
+      id: "failed-primary-retry-session",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      session_type: "primary",
+      generation_locked: false,
+      status: "failed",
+      created_at: new Date().toISOString(),
+    });
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.type).toBe("NEW_SESSION");
+    expect(response.body.session.id).toBe("failed-primary-retry-session");
+    expect(response.body.sessionType).toBe("primary");
+
+    const todaySessions = mockState.tables.task_sessions.filter(
+      (session: any) => session.goal_id === goalId && session.session_date === today
+    );
+    expect(todaySessions).toHaveLength(1);
+    expect(todaySessions[0].session_type).toBe("primary");
+    expect(todaySessions[0].status).toBe("active");
+  });
+
+  it("returns generation_in_progress when lock is not acquired and tasks are still empty", async () => {
+    const goalId = await createGoal();
+    mockState.forceGenerationLockContention = true;
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.type).toBe("ACTIVE_SESSION");
+    expect(response.body.status).toBe("generation_in_progress");
+    expect(response.body.tasks).toEqual([]);
   });
 
   it("rolls back goal creation when plan_steps insert fails", async () => {
