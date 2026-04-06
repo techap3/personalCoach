@@ -202,11 +202,10 @@ export default function Home() {
       }
 
       if (explicitCompleted) {
-        const nextSummary = data?.session_summary || data?.session?.summary_json || sessionSummary;
+        const nextSummary = data?.session_summary || data?.session?.summary_json || null;
         const nextMessage =
           data?.message ||
           nextSummary?.message ||
-          sessionCompletedMessage ||
           "Nice work today 🎉";
 
         setSessionCompleted(true);
@@ -235,12 +234,7 @@ export default function Home() {
       console.error("❌ Fetch tasks error:", err);
       return [] as Task[];
     }
-  }, [
-    getApiBaseUrl,
-    token,
-    sessionSummary,
-    sessionCompletedMessage,
-  ]);
+  }, [getApiBaseUrl, token]);
 
   /* =========================
      FETCH PLAN

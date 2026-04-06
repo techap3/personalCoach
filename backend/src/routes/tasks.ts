@@ -223,6 +223,21 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
         return res.status(500).json({ error: "Session conflict detected but no session found" });
       }
 
+      if (existingSession.status !== "active") {
+        const { data: existingSessionTasks } = await supabase
+          .from("tasks")
+          .select("*")
+          .eq("session_id", existingSession.id)
+          .order("created_at", { ascending: true });
+
+        return res.json({
+          type: "LATEST_SESSION",
+          sessionStatus: existingSession.status,
+          session: existingSession,
+          tasks: existingSessionTasks || [],
+        });
+      }
+
       workingSession = existingSession;
     } else if (sessionError || !insertedSession) {
       return res.status(500).json({ error: sessionError?.message || "Failed to create session" });
@@ -356,6 +371,12 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       finalTaskCount: difficultyBalancedTasks.length,
       goalId,
       stepId: activeStep.id,
+    });
+  }
+
+  if (workingSession.status !== "active") {
+    return res.status(500).json({
+      error: `Cannot insert tasks into non-active session: ${workingSession.status}`,
     });
   }
 

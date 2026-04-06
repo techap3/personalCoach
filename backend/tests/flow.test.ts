@@ -729,4 +729,102 @@ describe("Flow tests", () => {
       message: "Good effort. Try to complete a bit more tomorrow.",
     });
   });
+
+  it("does not attach new tasks to a completed conflict session", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = new Date().toISOString().split("T")[0];
+
+    mockState.tables.task_sessions.push({
+      id: "completed-conflict-session",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      status: "completed",
+      created_at: new Date().toISOString(),
+    });
+
+    mockState.tables.tasks.push({
+      id: "completed-conflict-task",
+      goal_id: goalId,
+      plan_step_id: step1.id,
+      session_id: "completed-conflict-session",
+      title: "Existing completed task",
+      description: "Already done",
+      difficulty: 2,
+      task_type: "learn",
+      status: "done",
+      created_at: new Date().toISOString(),
+    });
+
+    const beforeCount = mockState.tables.tasks.length;
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.type).toBe("LATEST_SESSION");
+    expect(response.body.sessionStatus).toBe("completed");
+    expect(response.body.session.id).toBe("completed-conflict-session");
+    expect(mockState.tables.tasks.length).toBe(beforeCount);
+  });
+
+  it("retry generate after completed conflict still does not reuse for insertion", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = new Date().toISOString().split("T")[0];
+
+    mockState.tables.task_sessions.push({
+      id: "completed-conflict-session-2",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      status: "completed",
+      created_at: new Date().toISOString(),
+    });
+
+    const first = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const beforeRetryCount = mockState.tables.tasks.length;
+
+    const second = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.type).toBe("LATEST_SESSION");
+    expect(second.body.type).toBe("LATEST_SESSION");
+    expect(mockState.tables.tasks.length).toBe(beforeRetryCount);
+  });
+
+  it("inserts tasks only into active sessions", async () => {
+    const goalId = await createGoal();
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+
+    const sessionsById = new Map(
+      mockState.tables.task_sessions.map((session: any) => [session.id, session])
+    );
+
+    const hasTaskInNonActiveSession = mockState.tables.tasks.some((task: any) => {
+      const session = sessionsById.get(task.session_id);
+      return session && session.status !== "active";
+    });
+
+    expect(hasTaskInNonActiveSession).toBe(false);
+  });
 });
