@@ -74,7 +74,6 @@ export default function Home() {
   const [showAllGoals, setShowAllGoals] = useState(false);
   const [activeStepIndex, setActiveStepIndex] = useState(0);
 
-  const [sessionCompleted, setSessionCompleted] = useState(false);
   const [sessionCompletedMessage, setSessionCompletedMessage] = useState<string | null>(null);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [latestSessionStatus, setLatestSessionStatus] = useState<SessionStatus>("none");
@@ -145,7 +144,6 @@ export default function Home() {
     setGoalId(null);
     setView("HOME");
     setViewMode("plan");
-    setSessionCompleted(false);
     setSessionCompletedMessage(null);
     setSessionSummary(null);
     setLatestSessionStatus("none");
@@ -183,7 +181,6 @@ export default function Home() {
         setPlanCompleted(true);
         // Preserve existing completion summary unless backend explicitly starts an active session.
         if (explicitActiveOrIncomplete) {
-          setSessionCompleted(false);
           setSessionCompletedMessage(null);
           setSessionSummary(null);
         }
@@ -210,7 +207,6 @@ export default function Home() {
           nextSummary?.message ||
           "Nice work today 🎉";
 
-        setSessionCompleted(true);
         setSessionCompletedMessage(nextMessage);
         if (nextSummary) {
           setSessionSummary(nextSummary);
@@ -221,7 +217,6 @@ export default function Home() {
       }
 
       if (explicitActiveOrIncomplete) {
-        setSessionCompleted(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
         setLatestSessionStatus("active");
@@ -402,12 +397,12 @@ export default function Home() {
     setView("PLAN");
   };
 
-  const generateTodaysTasks = async () => {
+  const startNewSession = async () => {
     const apiBaseUrl = getApiBaseUrl();
 
     if (generatingTasks || planCompleted || !goalId || !apiBaseUrl || !token) return;
 
-    console.log("🟦 CTA CLICKED: generateTodaysTasks", {
+    console.log("🟦 CTA CLICKED: startNewSession", {
       goalId,
       sessionStatus,
     });
@@ -439,16 +434,16 @@ export default function Home() {
 
       if (payload?.type === "ACTIVE_SESSION") {
         setLatestSessionStatus("active");
-        setSessionCompleted(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
       } else if (payload?.type === "NEW_SESSION") {
         setLatestSessionStatus("active");
-        setSessionCompleted(false);
         setSessionCompletedMessage(null);
         setSessionSummary(null);
       } else if (payload?.type === "LATEST_SESSION" && payload?.sessionStatus === "completed") {
+        // Guard against accidentally continuing a completed session when a new one was requested.
         setLatestSessionStatus("completed");
+        setGenerateError("Unable to start a new session yet. Previous session is already completed.");
       }
 
       const generatedTasks: Task[] = Array.isArray(payload)
@@ -463,7 +458,6 @@ export default function Home() {
       }));
 
       if (generatedTasks.length === 0 && payload?.message) {
-        setSessionCompleted(true);
         setSessionCompletedMessage(payload.message);
         setSessionSummary(payload.session_summary || null);
         setLatestSessionStatus("completed");
@@ -507,6 +501,26 @@ export default function Home() {
     }
   };
 
+  const continueSession = async () => {
+    if (!goalId) return;
+
+    setGenerateError(null);
+    setViewMode("tasks");
+    setView("TASKS");
+
+    await fetchTasks(goalId);
+    await fetchAllGoalTasks(goalId);
+  };
+
+  const handleGenerateClick = async () => {
+    if (sessionStatus === "active") {
+      await continueSession();
+      return;
+    }
+
+    await startNewSession();
+  };
+
   const handleGoalSelect = async (goal: Goal) => {
     setPlanCompleted(false);
     setGenerateError(null);
@@ -520,7 +534,6 @@ export default function Home() {
 
   const restartPlan = () => {
     setPlanCompleted(false);
-    setSessionCompleted(false);
     setSessionCompletedMessage(null);
     setSessionSummary(null);
     setLatestSessionStatus("none");
@@ -863,7 +876,7 @@ export default function Home() {
 
           <button
             onClick={() => {
-              void generateTodaysTasks();
+              void handleGenerateClick();
             }}
             className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
             disabled={!goalId || planCompleted || generatingTasks}
@@ -1042,7 +1055,7 @@ export default function Home() {
               <button
                 className="mt-4 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
                 onClick={() => {
-                  void generateTodaysTasks();
+                  void handleGenerateClick();
                 }}
               >
                 Continue to Next Step
@@ -1086,9 +1099,7 @@ export default function Home() {
                 <button
                   className="mt-3 bg-blue-600 text-white px-4 py-2 rounded"
                   onClick={() => {
-                    if (goalId) {
-                      void generateTodaysTasks();
-                    }
+                    void handleGenerateClick();
                   }}
                 >
                   Start Next Session
@@ -1125,7 +1136,6 @@ export default function Home() {
                       }}
                       onSessionCompleted={(summary) => {
                         setLatestSessionStatus("completed");
-                        setSessionCompleted(true);
                         setSessionCompletedMessage(summary.message);
                         setSessionSummary(summary);
                       }}
