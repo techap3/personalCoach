@@ -6,6 +6,7 @@ const TaskSchema = z.object({
       title: z.string(),
       description: z.string(),
       difficulty: z.number(),
+      task_type: z.enum(["action", "learn", "reflect", "review"]).optional(),
     })
   ),
 });

@@ -10,6 +10,14 @@ const makeTask = (index: number): GeneratedTask => ({
   title: `Task ${index}`,
   description: `Description ${index}`,
   difficulty: 2,
+  task_type:
+    index % 4 === 1
+      ? "action"
+      : index % 4 === 2
+        ? "learn"
+        : index % 4 === 3
+          ? "reflect"
+          : "review",
 });
 
 describe("task limits enforcement", () => {
@@ -43,7 +51,7 @@ describe("task limits enforcement", () => {
 
     expect(output.length).toBeGreaterThanOrEqual(MIN_TASKS);
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
-    expect(output[0].title).toBe("Review the objective");
+    expect(output[0].title).toBe("Spend 10 minutes actively working on your goal");
   });
 
   it("handles null/undefined safely", () => {

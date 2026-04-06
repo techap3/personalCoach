@@ -1,11 +1,113 @@
 export const MIN_TASKS = 3;
 export const MAX_TASKS = 5;
 
+export type TaskType = "action" | "learn" | "reflect" | "review";
+
+const TASK_TYPES: TaskType[] = ["action", "learn", "reflect", "review"];
+
+const FALLBACK_BY_TYPE: Record<TaskType, { title: string; description: string; difficulty: number }> = {
+  action: {
+    title: "Spend 10 minutes actively working on your goal",
+    description: "Take one concrete action now and capture what you finished in one sentence.",
+    difficulty: 2,
+  },
+  learn: {
+    title: "Learn one concept that unblocks your next action",
+    description: "Read or watch one focused resource and write down two practical takeaways.",
+    difficulty: 2,
+  },
+  reflect: {
+    title: "Reflect: what went well and what didn’t today?",
+    description: "Write one success, one friction point, and one adjustment for your next work block.",
+    difficulty: 1,
+  },
+  review: {
+    title: "Review what you learned and summarize key points",
+    description: "Summarize your top three insights and how each changes your next session.",
+    difficulty: 1,
+  },
+};
+
 export type GeneratedTask = {
   title: string;
   description: string;
   difficulty: number;
+  task_type: TaskType;
 };
+
+function normalizeTaskTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTaskType(value: unknown): TaskType {
+  if (typeof value !== "string") return "learn";
+
+  const normalized = value.trim().toLowerCase();
+  if (TASK_TYPES.includes(normalized as TaskType)) {
+    return normalized as TaskType;
+  }
+
+  if (normalized === "reflection") return "reflect";
+  return "learn";
+}
+
+function buildUniqueTitle(
+  baseTitle: string,
+  existingNormalizedTitles: Set<string>,
+  blockedNormalizedTitles: Set<string>
+): string {
+  let candidate = baseTitle;
+  let suffix = 2;
+
+  while (
+    existingNormalizedTitles.has(normalizeTaskTitle(candidate)) ||
+    blockedNormalizedTitles.has(normalizeTaskTitle(candidate))
+  ) {
+    candidate = `${baseTitle} (${suffix})`;
+    suffix += 1;
+  }
+
+  existingNormalizedTitles.add(normalizeTaskTitle(candidate));
+  return candidate;
+}
+
+function buildFallbackTaskByType(
+  taskType: TaskType,
+  existingNormalizedTitles: Set<string>,
+  blockedNormalizedTitles: Set<string>
+): GeneratedTask {
+  const fallback = FALLBACK_BY_TYPE[taskType];
+  const uniqueTitle = buildUniqueTitle(
+    fallback.title,
+    existingNormalizedTitles,
+    blockedNormalizedTitles
+  );
+
+  return {
+    ...fallback,
+    title: uniqueTitle,
+    task_type: taskType,
+  };
+}
+
+export function getTaskTypeDistribution(tasks: GeneratedTask[]) {
+  return tasks.reduce(
+    (acc, task) => {
+      acc[task.task_type] += 1;
+      return acc;
+    },
+    {
+      action: 0,
+      learn: 0,
+      reflect: 0,
+      review: 0,
+    } as Record<TaskType, number>
+  );
+}
 
 function clampDifficulty(value: unknown): number {
   if (typeof value !== "number" || Number.isNaN(value)) return 2;
@@ -30,6 +132,7 @@ function toTask(value: unknown): GeneratedTask | null {
     title,
     description,
     difficulty: clampDifficulty(maybeTask.difficulty),
+    task_type: normalizeTaskType(maybeTask.task_type),
   };
 }
 
@@ -39,32 +142,92 @@ export function sanitizeGeneratedTasks(input: unknown): GeneratedTask[] {
 }
 
 export function buildDeterministicFallbackTasks(stepTitle?: string): GeneratedTask[] {
-  const context = stepTitle?.trim() || "your current step";
+  const context = stepTitle?.trim() || "your goal";
 
   return [
     {
-      title: "Review the objective",
-      description: `Spend 10 minutes clarifying what success looks like for ${context}.`,
-      difficulty: 1,
-    },
-    {
-      title: "Complete one concrete action",
-      description: `Take one specific action that creates measurable progress on ${context}.`,
+      title: "Spend 10 minutes actively working on your goal",
+      description: `Take one concrete action that directly advances ${context}.`,
       difficulty: 2,
+      task_type: "action",
     },
     {
-      title: "Reflect and queue the next move",
-      description: "Write what you completed and define the next concrete action for your next session.",
+      title: "Learn one concept that unblocks your next action",
+      description: `Study one focused concept related to ${context} and note two useful takeaways.`,
+      difficulty: 2,
+      task_type: "learn",
+    },
+    {
+      title: "Reflect: what went well and what didn’t today?",
+      description: "Write one win, one blocker, and one adjustment for your next session.",
       difficulty: 1,
+      task_type: "reflect",
     },
   ];
+}
+
+export function enforceTaskTypeMix(
+  input: unknown,
+  options?: { blockedNormalizedTitles?: Set<string> | string[] }
+): GeneratedTask[] {
+  const tasks = sanitizeGeneratedTasks(input);
+
+  const blockedTitles = new Set(
+    Array.isArray(options?.blockedNormalizedTitles)
+      ? options?.blockedNormalizedTitles
+      : Array.from(options?.blockedNormalizedTitles ?? [])
+  );
+
+  const existingTitles = new Set(tasks.map((task) => normalizeTaskTitle(task.title)));
+
+  const replaceTaskWithType = (index: number, taskType: TaskType) => {
+    tasks[index] = buildFallbackTaskByType(taskType, existingTitles, blockedTitles);
+  };
+
+  const hasType = (type: TaskType) => tasks.some((task) => task.task_type === type);
+
+  if (!hasType("action")) {
+    const replaceIndex = tasks.findIndex((task) => task.task_type !== "reflect" && task.task_type !== "review");
+    if (replaceIndex >= 0) {
+      replaceTaskWithType(replaceIndex, "action");
+    } else {
+      tasks.push(buildFallbackTaskByType("action", existingTitles, blockedTitles));
+    }
+  }
+
+  if (!hasType("reflect") && !hasType("review")) {
+    const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
+    if (replaceIndex >= 0) {
+      replaceTaskWithType(replaceIndex, "reflect");
+    } else {
+      tasks.push(buildFallbackTaskByType("reflect", existingTitles, blockedTitles));
+    }
+  }
+
+  if (!hasType("learn") && tasks.length >= 3) {
+    const replaceIndex = tasks.findIndex((task) => task.task_type !== "action" && task.task_type !== "reflect" && task.task_type !== "review");
+    if (replaceIndex >= 0) {
+      replaceTaskWithType(replaceIndex, "learn");
+    } else {
+      tasks.push(buildFallbackTaskByType("learn", existingTitles, blockedTitles));
+    }
+  }
+
+  const uniqueTypes = new Set(tasks.map((task) => task.task_type));
+  if (uniqueTypes.size === 1 && tasks.length > 1) {
+    replaceTaskWithType(1, "learn");
+  }
+
+  return tasks;
 }
 
 export function enforceTaskCount(
   input: unknown,
   options?: { stepTitle?: string; blockedNormalizedTitles?: Set<string> | string[] }
 ): GeneratedTask[] {
-  const tasks = sanitizeGeneratedTasks(input);
+  const tasks = enforceTaskTypeMix(input, {
+    blockedNormalizedTitles: options?.blockedNormalizedTitles,
+  });
   const bounded = tasks.slice(0, MAX_TASKS);
   const blockedTitles = new Set(
     Array.isArray(options?.blockedNormalizedTitles)
@@ -72,23 +235,16 @@ export function enforceTaskCount(
       : Array.from(options?.blockedNormalizedTitles ?? [])
   );
 
-  const normalizeTitle = (title: string) =>
-    title
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
   if (bounded.length >= MIN_TASKS) {
     return bounded;
   }
 
   const fallback = buildDeterministicFallbackTasks(options?.stepTitle);
-  const existingTitles = new Set(bounded.map((task) => normalizeTitle(task.title)));
+  const existingTitles = new Set(bounded.map((task) => normalizeTaskTitle(task.title)));
 
   for (const fallbackTask of fallback) {
     if (bounded.length >= MIN_TASKS) break;
-    const normalizedFallbackTitle = normalizeTitle(fallbackTask.title);
+    const normalizedFallbackTitle = normalizeTaskTitle(fallbackTask.title);
 
     if (!existingTitles.has(normalizedFallbackTitle) && !blockedTitles.has(normalizedFallbackTitle)) {
       bounded.push(fallbackTask);
@@ -102,11 +258,11 @@ export function enforceTaskCount(
     const baseTask = fallback[fallbackIndex % fallback.length];
     let variantCounter = 2;
     let candidateTitle = baseTask.title;
-    let normalizedCandidate = normalizeTitle(candidateTitle);
+    let normalizedCandidate = normalizeTaskTitle(candidateTitle);
 
     while (existingTitles.has(normalizedCandidate) || blockedTitles.has(normalizedCandidate)) {
       candidateTitle = `${baseTask.title} ${variantCounter}`;
-      normalizedCandidate = normalizeTitle(candidateTitle);
+      normalizedCandidate = normalizeTaskTitle(candidateTitle);
       variantCounter += 1;
     }
 

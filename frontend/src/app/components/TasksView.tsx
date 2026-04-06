@@ -7,6 +7,7 @@ type Task = {
   title: string;
   description: string;
   difficulty: number;
+  task_type?: "action" | "learn" | "reflect" | "review";
   status?: string;
   plan_step_id?: string | number;
 };
@@ -43,6 +44,28 @@ export default function TasksView({
     () => tasksToRender.filter((task) => task.status !== "archived"),
     [tasksToRender]
   );
+
+  const getTaskTypeStyles = (taskType?: Task["task_type"]) => {
+    if (taskType === "action") {
+      return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-200 dark:border-blue-700";
+    }
+    if (taskType === "learn") {
+      return "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-200 dark:border-indigo-700";
+    }
+    if (taskType === "reflect") {
+      return "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:border-emerald-700";
+    }
+    if (taskType === "review") {
+      return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:border-amber-700";
+    }
+
+    return "bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-700";
+  };
+
+  const formatTaskType = (taskType?: Task["task_type"]) => {
+    if (!taskType) return "Learn";
+    return taskType.charAt(0).toUpperCase() + taskType.slice(1);
+  };
 
   const isPendingTask = (task: Task) => task.status === "pending" || !task.status;
 
@@ -141,6 +164,14 @@ export default function TasksView({
             >
               {task.title}
             </h3>
+
+                <div className="mt-2">
+                  <span
+                    className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getTaskTypeStyles(task.task_type)}`}
+                  >
+                    {formatTaskType(task.task_type)}
+                  </span>
+                </div>
 
                 {isExpanded && (
               <>

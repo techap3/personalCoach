@@ -17,6 +17,7 @@ type Task = {
   title: string;
   description: string;
   difficulty: number;
+  task_type?: "action" | "learn" | "reflect" | "review";
   status?: string;
   plan_step_id?: string; // UUID — matches plan_steps.id
   session_id?: string;
