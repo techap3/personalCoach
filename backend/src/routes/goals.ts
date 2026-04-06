@@ -86,4 +86,11 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   res.json(data);
 });
 
+router.post("/improve", authMiddleware, async (req: AuthRequest, res) => {
+  return res.status(503).json({
+    success: false,
+    message: "Feature temporarily disabled",
+  });
+});
+
 export default router;

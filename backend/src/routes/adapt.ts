@@ -76,17 +76,40 @@ router.post("/", authMiddleware, async (req: AuthRequest, res) => {
 
     const today = getLocalDateString();
 
+    const { data: activeSessions } = await supabase
+      .from("task_sessions")
+      .select("*")
+      .eq("goal_id", goal_id)
+      .eq("session_date", today)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    const activeSession = activeSessions?.[0] ?? null;
+
+    if (!activeSession?.id) {
+      return res.status(400).json({ error: "No active session for adaptation" });
+    }
+
     // 🔥 FIX: preserve plan_step_id
     const newTasks = adapted.map((t: any, index: number) => ({
       goal_id,
+      session_id: activeSession.id,
       title: t.title,
       description: t.description,
       difficulty: t.difficulty,
       status: "pending",
       scheduled_date: today,
-      plan_step_id:
-        pendingTasks[index]?.plan_step_id ?? index,
+      plan_step_id: pendingTasks[index]?.plan_step_id,
     }));
+
+    const hasOrphanTask = newTasks.some(
+      (t: any) => !t.session_id || !t.plan_step_id
+    );
+
+    if (hasOrphanTask) {
+      return res.status(500).json({ error: "Task linkage error: missing session_id or plan_step_id" });
+    }
 
     const { data: inserted } = await supabase
       .from("tasks")

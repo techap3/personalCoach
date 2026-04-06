@@ -89,13 +89,15 @@ export default function PlanView({ plan, tasks, planSteps }: PlanViewProps) {
                   )}
                 </div>
 
-                <span
-                  className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${getStatusClasses(
-                    status
-                  )}`}
-                >
-                  {status}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${getStatusClasses(
+                      status
+                    )}`}
+                  >
+                    {status}
+                  </span>
+                </div>
               </div>
 
               <p className="text-sm text-gray-600 mt-1">

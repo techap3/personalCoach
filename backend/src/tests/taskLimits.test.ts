@@ -1,0 +1,56 @@
+import { describe, expect, it } from "vitest";
+import {
+  enforceTaskCount,
+  MIN_TASKS,
+  MAX_TASKS,
+  type GeneratedTask,
+} from "../services/ai/taskLimits";
+
+const makeTask = (index: number): GeneratedTask => ({
+  title: `Task ${index}`,
+  description: `Description ${index}`,
+  difficulty: 2,
+});
+
+describe("task limits enforcement", () => {
+  it("trims over-limit input to max", () => {
+    const input = Array.from({ length: 8 }, (_, i) => makeTask(i + 1));
+    const output = enforceTaskCount(input);
+
+    expect(output).toHaveLength(MAX_TASKS);
+    expect(output[0].title).toBe("Task 1");
+    expect(output[MAX_TASKS - 1].title).toBe(`Task ${MAX_TASKS}`);
+  });
+
+  it("fills under-limit input to minimum", () => {
+    const input = [makeTask(1)];
+    const output = enforceTaskCount(input, { stepTitle: "Step 1" });
+
+    expect(output.length).toBeGreaterThanOrEqual(MIN_TASKS);
+    expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
+    expect(output[0].title).toBe("Task 1");
+  });
+
+  it("keeps valid-range input unchanged", () => {
+    const input = [makeTask(1), makeTask(2), makeTask(3), makeTask(4)];
+    const output = enforceTaskCount(input);
+
+    expect(output).toEqual(input);
+  });
+
+  it("uses deterministic fallback for empty input", () => {
+    const output = enforceTaskCount([]);
+
+    expect(output.length).toBeGreaterThanOrEqual(MIN_TASKS);
+    expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
+    expect(output[0].title).toBe("Review the objective");
+  });
+
+  it("handles null/undefined safely", () => {
+    const fromNull = enforceTaskCount(null);
+    const fromUndefined = enforceTaskCount(undefined);
+
+    expect(fromNull.length).toBeGreaterThanOrEqual(MIN_TASKS);
+    expect(fromUndefined.length).toBeGreaterThanOrEqual(MIN_TASKS);
+  });
+});

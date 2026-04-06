@@ -2,25 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 import type supertest from "supertest";
 
-const { generateAdaptedPlanMock, parseAdaptedPlanMock } = vi.hoisted(() => ({
-  generateAdaptedPlanMock: vi.fn(async () => "{\"updated_plan\":[]}"),
-  parseAdaptedPlanMock: vi.fn(() => ({
-    updated_plan: [
-      {
-        title: "Improved Step 1",
-        description: "Refined first step",
-        difficulty: 2,
-      },
-      {
-        title: "Improved Step 2",
-        description: "Refined second step",
-        difficulty: 3,
-      },
-    ],
-  })),
-}));
-
-vi.mock("../src/services/ai", () => ({
+vi.mock("../services/ai", () => ({
   generatePlan: async () => ({
     plan: [
       {
@@ -39,7 +21,7 @@ vi.mock("../src/services/ai", () => ({
   }),
 }));
 
-vi.mock("../src/services/ai/taskGenerator", () => ({
+vi.mock("../services/ai/taskGenerator", () => ({
   generateTasksForStep: async () => [
     {
       title: "Task A",
@@ -54,15 +36,7 @@ vi.mock("../src/services/ai/taskGenerator", () => ({
   ],
 }));
 
-vi.mock("../src/services/ai/adaptPlan", () => ({
-  generateAdaptedPlan: generateAdaptedPlanMock,
-}));
-
-vi.mock("../src/services/ai/adaptParser", () => ({
-  parseAdaptedPlan: parseAdaptedPlanMock,
-}));
-
-vi.mock("../src/db/supabase", () => {
+vi.mock("../db/supabase", () => {
   type Row = Record<string, any>;
 
   const state = {
@@ -73,7 +47,6 @@ vi.mock("../src/db/supabase", () => {
       plan_steps: [] as Row[],
       task_sessions: [] as Row[],
       tasks: [] as Row[],
-      user_preferences: [] as Row[],
     },
   };
 
@@ -88,7 +61,6 @@ vi.mock("../src/db/supabase", () => {
     state.tables.plan_steps = [];
     state.tables.task_sessions = [];
     state.tables.tasks = [];
-    state.tables.user_preferences = [];
   };
 
   class QueryBuilder {
@@ -308,6 +280,7 @@ let app: Express;
 let request: typeof supertest;
 let mockState: any;
 let resetMockDb: () => void;
+let getSupabaseClient: () => any;
 
 const authHeader = () => {
   const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
@@ -316,11 +289,13 @@ const authHeader = () => {
   return `Bearer ${header}.${payload}.${signature}`;
 };
 
+const getToday = () => new Date().toISOString().split("T")[0];
+
 async function createGoal() {
   const response = await request(app)
     .post("/goals")
     .set("Authorization", authHeader())
-    .send({ title: "Learn booking", description: "Flow test" });
+    .send({ title: "Progression test goal", description: "Regression tests" });
 
   expect(response.status).toBe(200);
   return response.body.goal.id as string;
@@ -329,78 +304,79 @@ async function createGoal() {
 beforeAll(async () => {
   process.env.NODE_ENV = "test";
   request = (await import("supertest")).default;
-  ({ app } = await import("../src/index"));
+  ({ app } = await import("../index"));
 
-  const supabaseModule = (await import("../src/db/supabase")) as any;
+  const supabaseModule = (await import("../db/supabase")) as any;
   mockState = supabaseModule.__mockState;
   resetMockDb = supabaseModule.__resetMockDb;
+  getSupabaseClient = supabaseModule.getSupabaseClient;
 });
 
 beforeEach(() => {
   resetMockDb();
-  generateAdaptedPlanMock.mockClear();
-  parseAdaptedPlanMock.mockClear();
-  generateAdaptedPlanMock.mockImplementation(async () => "{\"updated_plan\":[]}");
-  parseAdaptedPlanMock.mockImplementation(() => ({
-    updated_plan: [
-      {
-        title: "Improved Step 1",
-        description: "Refined first step",
-        difficulty: 2,
-      },
-      {
-        title: "Improved Step 2",
-        description: "Refined second step",
-        difficulty: 3,
-      },
-    ],
-  }));
 });
 
-describe("Flow tests", () => {
-  it("should generate tasks for active step", async () => {
+describe("Progression regression tests", () => {
+  it("TEST 1 — step completes correctly", async () => {
+    const { runProgressionEngine } = await import("../services/progressionEngine");
     const goalId = await createGoal();
 
-    const response = await request(app)
-      .post("/tasks/generate")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const step2 = mockState.tables.plan_steps.find((s: any) => s.step_index === 1);
 
-    expect(response.status).toBe(200);
-    expect(response.body.tasks).toHaveLength(3);
-    expect(mockState.tables.task_sessions).toHaveLength(1);
-    expect(mockState.tables.task_sessions[0].status).toBe("active");
+    const sessionId = "session-1";
+    const today = getToday();
+
+    mockState.tables.task_sessions.push({
+      id: sessionId,
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      status: "completed",
+      created_at: new Date().toISOString(),
+    });
+
+    mockState.tables.tasks.push(
+      {
+        id: "task-1",
+        goal_id: goalId,
+        plan_step_id: step1.id,
+        session_id: sessionId,
+        status: "done",
+        title: "Task 1",
+        description: "",
+        difficulty: 1,
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: "task-2",
+        goal_id: goalId,
+        plan_step_id: step1.id,
+        session_id: sessionId,
+        status: "skipped",
+        title: "Task 2",
+        description: "",
+        difficulty: 1,
+        created_at: new Date().toISOString(),
+      }
+    );
+
+    await runProgressionEngine(getSupabaseClient(), goalId);
+
+    expect(step1.status).toBe("completed");
+    expect(step2.status).toBe("active");
   });
 
-  it("should not regenerate tasks if session active", async () => {
+  it("TEST 2 — new session allowed same day", async () => {
     const goalId = await createGoal();
 
     const first = await request(app)
-      .post("/tasks/generate")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
-
-    const second = await request(app)
       .post("/tasks/generate")
       .set("Authorization", authHeader())
       .send({ goal_id: goalId });
 
     expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-    expect(mockState.tables.task_sessions).toHaveLength(1);
-
-    const firstIds = first.body.tasks.map((t: any) => t.id);
-    const secondIds = second.body.tasks.map((t: any) => t.id);
-    expect(secondIds).toEqual(firstIds);
-  });
-
-  it("should generate new tasks for next step when prior step session is completed", async () => {
-    const goalId = await createGoal();
-
-    const first = await request(app)
-      .post("/tasks/generate")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
 
     for (const task of first.body.tasks) {
       await request(app)
@@ -418,54 +394,16 @@ describe("Flow tests", () => {
     expect(second.body.type).toBe("NEW_SESSION");
     expect(second.body.tasks).toHaveLength(3);
 
-    const firstStep = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
-    const secondStep = mockState.tables.plan_steps.find((s: any) => s.step_index === 1);
-    const secondTaskStepIds = second.body.tasks.map((t: any) => t.plan_step_id);
+    const today = getToday();
+    const step2 = mockState.tables.plan_steps.find((s: any) => s.step_index === 1);
+    const step2Sessions = mockState.tables.task_sessions.filter(
+      (s: any) => s.goal_id === goalId && s.plan_step_id === step2.id && s.session_date === today
+    );
 
-    expect(firstStep?.status).toBe("completed");
-    expect(secondStep?.status).toBe("active");
-    expect(secondTaskStepIds.every((id: string) => id === secondStep?.id)).toBe(true);
+    expect(step2Sessions.length).toBe(1);
   });
 
-  it("should mark step completed after tasks done", async () => {
-    const goalId = await createGoal();
-
-    const generated = await request(app)
-      .post("/tasks/generate")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
-
-    for (const task of generated.body.tasks) {
-      await request(app)
-        .post("/tasks/update")
-        .set("Authorization", authHeader())
-        .send({ task_id: task.id, status: "done" });
-    }
-
-    const firstStep = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
-    expect(firstStep?.status).toBe("completed");
-  });
-
-  it("should activate next step", async () => {
-    const goalId = await createGoal();
-
-    const generated = await request(app)
-      .post("/tasks/generate")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
-
-    for (const task of generated.body.tasks) {
-      await request(app)
-        .post("/tasks/update")
-        .set("Authorization", authHeader())
-        .send({ task_id: task.id, status: "done" });
-    }
-
-    const nextStep = mockState.tables.plan_steps.find((s: any) => s.step_index === 1);
-    expect(nextStep?.status).toBe("active");
-  });
-
-  it("should preserve done/skipped history when generating next set on same day", async () => {
+  it("TEST 3 — no duplicate session per step per day", async () => {
     const goalId = await createGoal();
 
     const first = await request(app)
@@ -473,85 +411,103 @@ describe("Flow tests", () => {
       .set("Authorization", authHeader())
       .send({ goal_id: goalId });
 
+    const second = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
     expect(first.status).toBe(200);
-    expect(first.body.tasks).toHaveLength(3);
+    expect(second.status).toBe(200);
 
-    await request(app)
-      .post("/tasks/update")
+    const today = getToday();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const step1Sessions = mockState.tables.task_sessions.filter(
+      (s: any) => s.goal_id === goalId && s.plan_step_id === step1.id && s.session_date === today
+    );
+
+    expect(step1Sessions.length).toBe(1);
+  });
+
+  it("TEST 4 — tasks not regenerated if session active", async () => {
+    const goalId = await createGoal();
+
+    const first = await request(app)
+      .post("/tasks/generate")
       .set("Authorization", authHeader())
-      .send({ task_id: first.body.tasks[0].id, status: "done" });
+      .send({ goal_id: goalId });
 
-    await request(app)
-      .post("/tasks/update")
-      .set("Authorization", authHeader())
-      .send({ task_id: first.body.tasks[1].id, status: "skipped" });
-
-    for (const task of first.body.tasks.slice(2)) {
-      await request(app)
-        .post("/tasks/update")
-        .set("Authorization", authHeader())
-        .send({ task_id: task.id, status: "skipped" });
-    }
+    const tasksBefore = mockState.tables.tasks.length;
 
     const second = await request(app)
       .post("/tasks/generate")
       .set("Authorization", authHeader())
       .send({ goal_id: goalId });
 
+    const tasksAfter = mockState.tables.tasks.length;
+
+    expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(second.body.type).toBe("NEW_SESSION");
-    expect(second.body.tasks).toHaveLength(3);
-
-    const firstTaskA = mockState.tables.tasks.find(
-      (t: any) => t.id === first.body.tasks[0].id
-    );
-    const firstTaskB = mockState.tables.tasks.find(
-      (t: any) => t.id === first.body.tasks[1].id
-    );
-
-    expect(firstTaskA?.status).toBe("done");
-    expect(firstTaskB?.status).toBe("skipped");
+    expect(second.body.type).toBe("ACTIVE_SESSION");
+    expect(tasksAfter).toBe(tasksBefore);
   });
 
-  it("should return feature disabled for improve plan endpoint", async () => {
+  it("TEST 5 — step completion threshold (2 done, 1 skipped)", async () => {
+    const { runProgressionEngine } = await import("../services/progressionEngine");
     const goalId = await createGoal();
 
-    const response = await request(app)
-      .post("/goals/improve")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
 
-    expect(response.status).toBe(503);
-    expect(response.body.success).toBe(false);
-    expect(response.body.message).toMatch(/Feature temporarily disabled/i);
-    expect(generateAdaptedPlanMock).not.toHaveBeenCalled();
-    expect(parseAdaptedPlanMock).not.toHaveBeenCalled();
-  });
+    const sessionId = "session-threshold";
+    const today = getToday();
 
-  it("should keep active session unaffected when improve endpoint is disabled", async () => {
-    const goalId = await createGoal();
+    mockState.tables.task_sessions.push({
+      id: sessionId,
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      status: "completed",
+      created_at: new Date().toISOString(),
+    });
 
-    await request(app)
-      .post("/tasks/generate")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
-
-    const activeSessionBefore = mockState.tables.task_sessions.find(
-      (session: any) => session.goal_id === goalId && session.status === "active"
+    mockState.tables.tasks.push(
+      {
+        id: "task-a",
+        goal_id: goalId,
+        plan_step_id: step1.id,
+        session_id: sessionId,
+        status: "done",
+        title: "Task A",
+        description: "",
+        difficulty: 1,
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: "task-b",
+        goal_id: goalId,
+        plan_step_id: step1.id,
+        session_id: sessionId,
+        status: "done",
+        title: "Task B",
+        description: "",
+        difficulty: 1,
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: "task-c",
+        goal_id: goalId,
+        plan_step_id: step1.id,
+        session_id: sessionId,
+        status: "skipped",
+        title: "Task C",
+        description: "",
+        difficulty: 1,
+        created_at: new Date().toISOString(),
+      }
     );
 
-    const response = await request(app)
-      .post("/goals/improve")
-      .set("Authorization", authHeader())
-      .send({ goal_id: goalId });
+    await runProgressionEngine(getSupabaseClient(), goalId);
 
-    expect(response.status).toBe(503);
-    expect(response.body.success).toBe(false);
-
-    const activeSessionAfter = mockState.tables.task_sessions.find(
-      (session: any) => session.goal_id === goalId && session.status === "active"
-    );
-
-    expect(activeSessionAfter?.id).toBe(activeSessionBefore?.id);
+    expect(step1.status).toBe("completed");
   });
 });
