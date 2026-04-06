@@ -1,12 +1,11 @@
 import { getAIClient } from "./provider";
 import { buildTaskPrompt, buildStepTaskPrompt } from "./prompts";
 import { PlanResponse } from "./parser";
-
-type GeneratedTask = {
-  title: string;
-  description: string;
-  difficulty: number;
-};
+import {
+  enforceTaskCount,
+  sanitizeGeneratedTasks,
+  type GeneratedTask,
+} from "./taskLimits";
 
 type GeneratedTaskWithPlanStep = GeneratedTask & {
   plan_step_id: number;
@@ -52,29 +51,15 @@ export async function generateTasks(plan: PlanResponse) {
 
     const parsed = JSON.parse(clean);
     const parsedTasks = (parsed.tasks || []) as GeneratedTask[];
+    const enforcedTasks = enforceTaskCount(parsedTasks);
 
-    const mappedTasks = mapTasksToPlanSteps(parsedTasks, plan);
+    const mappedTasks = mapTasksToPlanSteps(enforcedTasks, plan);
 
     return mappedTasks;
   } catch (err) {
     console.error("❌ Task parse failed:", err);
 
-    // fallback (very important for stability)
-    return mapTasksToPlanSteps(
-    [
-        {
-        title: "Start your first focused session",
-        description: "Spend 20 minutes taking a concrete first step toward your goal",
-        difficulty: 1,
-        },
-        {
-        title: "Define a clear next milestone",
-        description: "Write down one specific milestone you want to achieve next",
-        difficulty: 2,
-        },
-    ],
-    plan
-    );
+    return mapTasksToPlanSteps(enforceTaskCount([]), plan);
   }
 }
 
@@ -86,13 +71,15 @@ export async function generateTasksForStep(step: {
   title: string;
   description: string;
   difficulty: number;
+}, options?: {
+  previousTasks?: string[];
 }): Promise<GeneratedTask[]> {
   const client = getAIClient();
   const model = process.env.AI_MODEL || "meta-llama/llama-3-8b-instruct";
 
   const response = await client.chat.completions.create({
     model,
-    messages: buildStepTaskPrompt(step),
+    messages: buildStepTaskPrompt(step, options?.previousTasks || []),
   });
 
   const raw = response.choices[0]?.message?.content || "";
@@ -102,21 +89,10 @@ export async function generateTasksForStep(step: {
     const jsonEnd = raw.lastIndexOf("}");
     const clean = raw.slice(jsonStart, jsonEnd + 1);
     const parsed = JSON.parse(clean);
-    const tasks = (parsed.tasks || []) as GeneratedTask[];
-    return tasks;
+    const aiTasks = (parsed.tasks || []) as GeneratedTask[];
+    return sanitizeGeneratedTasks(aiTasks);
   } catch (err) {
     console.error("❌ Step task parse failed:", err);
-    return [
-      {
-        title: "Take one concrete action",
-        description: `Do one specific thing to make progress on: ${step.title}`,
-        difficulty: step.difficulty,
-      },
-      {
-        title: "Review and note progress",
-        description: "Write down what you did and what the next small action is",
-        difficulty: 1,
-      },
-    ];
+    return [];
   }
 }

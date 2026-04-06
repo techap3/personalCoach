@@ -19,16 +19,13 @@ type Task = {
   difficulty: number;
   status?: string;
   plan_step_id?: string; // UUID — matches plan_steps.id
+  session_id?: string;
+  created_at?: string;
 };
 
-type PlanStep = {
+type PlanStepMeta = {
   id: string;
-  goal_id: string;
-  plan_id: string;
   step_index: number;
-  title: string;
-  description?: string;
-  difficulty?: number;
   status: string;
 };
 
@@ -57,7 +54,7 @@ export default function Home() {
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [todayTasks, setTodayTasks] = useState<Task[]>([]);
   const [allGoalTasks, setAllGoalTasks] = useState<Task[]>([]);
-  const [planSteps, setPlanSteps] = useState<PlanStep[]>([]);
+  const [planStepMeta, setPlanStepMeta] = useState<PlanStepMeta[]>([]);
   const [allTasks, setAllTasks] = useState<AllTask[]>([]);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [goals, setGoals] = useState<any[]>([]);
@@ -67,8 +64,13 @@ export default function Home() {
   const [showAllGoals, setShowAllGoals] = useState(false);
   const [activeStepIndex, setActiveStepIndex] = useState(0);
 
-  const [adapting, setAdapting] = useState(false);
-  const [adaptError, setAdaptError] = useState<string | null>(null);
+  const [sessionCompleted, setSessionCompleted] = useState(false);
+  const [sessionCompletedMessage, setSessionCompletedMessage] = useState<string | null>(null);
+  const [stepCompleted, setStepCompleted] = useState(false);
+  const [planCompleted, setPlanCompleted] = useState(false);
+  const [generatingTasks, setGeneratingTasks] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [sessionCtaState, setSessionCtaState] = useState<"none" | "active" | "completed">("none");
 
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
   const token = session?.access_token;
@@ -126,12 +128,19 @@ export default function Home() {
     setPlan(null);
     setTodayTasks([]);
     setAllGoalTasks([]);
-    setPlanSteps([]);
+    setPlanStepMeta([]);
     setAllTasks([]);
     setGoals([]);
     setGoalId(null);
     setView("HOME");
     setViewMode("plan");
+    setSessionCompleted(false);
+    setSessionCompletedMessage(null);
+    setStepCompleted(false);
+    setPlanCompleted(false);
+    setGeneratingTasks(false);
+    setGenerateError(null);
+    setSessionCtaState("none");
   };
 
   /* =========================
@@ -150,6 +159,36 @@ export default function Home() {
       });
 
       const data = await res.json();
+
+      if (data?.planCompleted) {
+        setPlanCompleted(true);
+        setSessionCompleted(false);
+        setSessionCompletedMessage(null);
+        setStepCompleted(false);
+        setSessionCtaState("completed");
+        setTodayTasks([]);
+        return [] as Task[];
+      }
+
+      setPlanCompleted(false);
+
+      if (data?.type === "ACTIVE_SESSION") {
+        setSessionCtaState("active");
+      } else if (data?.type === "LATEST_SESSION" || data?.sessionCompleted) {
+        setSessionCtaState("completed");
+      } else if (data?.type === "NO_SESSION") {
+        setSessionCtaState("none");
+      }
+
+      if (data?.sessionCompleted) {
+        setSessionCompleted(true);
+        setSessionCompletedMessage(data.message || "Nice work today 🎉");
+        setTodayTasks([]);
+        return [] as Task[];
+      }
+
+      setSessionCompleted(false);
+      setSessionCompletedMessage(null);
 
       const normalizedTasks: Task[] = (Array.isArray(data) ? data : data.tasks || []).map((task: Task) => ({
         ...task,
@@ -181,16 +220,35 @@ export default function Home() {
       return;
     }
 
-    setPlan((data?.plan_json as PlanResponse | null) ?? null);
+    const normalizedPlan = data?.plan_json
+      ? {
+          plan: ((data.plan_json as PlanResponse).plan || []).map((step) => ({
+            title: String(step.title || "").trim(),
+            description: String(step.description || "").trim(),
+            difficulty: Number(step.difficulty ?? 1),
+          })),
+        }
+      : null;
+
+    setPlan(normalizedPlan);
 
     // Fetch plan_steps for UUID-based task ↔ step matching
     const { data: steps } = await supabase
       .from("plan_steps")
-      .select("*")
+      .select("id, step_index, status")
       .eq("goal_id", nextGoalId)
       .order("step_index", { ascending: true });
 
-    setPlanSteps((steps as PlanStep[]) || []);
+    const normalizedSteps = ((steps as PlanStepMeta[]) || []).map((step) => ({
+      ...step,
+    }));
+
+    setPlanStepMeta(normalizedSteps);
+
+    return {
+      plan: normalizedPlan,
+      stepMeta: normalizedSteps,
+    };
   }, []);
 
   /* =========================
@@ -310,7 +368,16 @@ export default function Home() {
   const generateTodaysTasks = async () => {
     const apiBaseUrl = getApiBaseUrl();
 
-    if (!goalId || !apiBaseUrl || !token) return;
+    if (generatingTasks || planCompleted || !goalId || !apiBaseUrl || !token) return;
+
+    console.log("🟦 CTA CLICKED: generateTodaysTasks", {
+      goalId,
+      sessionCtaState,
+    });
+
+    setGeneratingTasks(true);
+    setGenerateError(null);
+    setStepCompleted(false);
 
     try {
       const res = await fetch(`${apiBaseUrl}/tasks/generate`, {
@@ -323,17 +390,57 @@ export default function Home() {
       });
 
       if (!res.ok) {
-        const err = await res.text();
-        console.error("❌ Task gen error:", err);
+        const errText = await res.text();
+        console.error("❌ Task gen error:", errText);
+        setGenerateError(errText || "Failed to generate tasks.");
         return;
       }
 
-      await res.json();
+      const payload = await res.json();
+      console.log("🟩 GENERATE RESPONSE", payload);
+      console.log("🧾 SESSION ID", payload?.session?.id || null);
+
+      if (payload?.type === "ACTIVE_SESSION") {
+        setSessionCtaState("active");
+      } else if (payload?.type === "NEW_SESSION") {
+        setSessionCtaState("active");
+      }
+
+      const generatedTasks: Task[] = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.tasks)
+          ? payload.tasks
+          : [];
+
+      const normalizedGeneratedTasks: Task[] = generatedTasks.map((task: Task) => ({
+        ...task,
+        plan_step_id: task.plan_step_id ? String(task.plan_step_id) : undefined,
+      }));
+
+      if (generatedTasks.length === 0 && payload?.message) {
+        setSessionCompleted(true);
+        setSessionCompletedMessage(payload.message);
+        setTodayTasks([]);
+        await fetchAllGoalTasks(goalId);
+        await fetchAllTasks();
+        setViewMode("tasks");
+        setView("TASKS");
+        return;
+      }
+
+      if (normalizedGeneratedTasks.length > 0) {
+        setTodayTasks(normalizedGeneratedTasks);
+      }
+
+      // Success path always transitions into tasks view.
+      setViewMode("tasks");
+      setView("TASKS");
+
       await fetchTasks(goalId);
       const goalTasks = await fetchAllGoalTasks(goalId);
 
       // Find first step with pending tasks using UUID matching
-      const firstPendingStepIdx = planSteps.findIndex((step) => {
+      const firstPendingStepIdx = planStepMeta.findIndex((step) => {
         const stepTasks = goalTasks.filter(
           (task) => String(task.plan_step_id) === String(step.id)
         );
@@ -344,19 +451,38 @@ export default function Home() {
         setActiveStepIndex(firstPendingStepIdx);
       }
 
-      setViewMode("tasks");
       await fetchAllTasks();
-      setView("TASKS");
     } catch (err) {
       console.error("❌ Task generation failed:", err);
+      setGenerateError("Failed to generate tasks. Please try again.");
+    } finally {
+      setGeneratingTasks(false);
     }
   };
 
   const handleGoalSelect = async (goal: Goal) => {
+    setPlanCompleted(false);
+    setGenerateError(null);
+    setGeneratingTasks(false);
+    setSessionCtaState("none");
     setGoalId(goal.id);
     setActiveStepIndex(0);
     setViewMode("tasks");
     setView("TASKS");
+  };
+
+  const restartPlan = () => {
+    setPlanCompleted(false);
+    setSessionCompleted(false);
+    setSessionCompletedMessage(null);
+    setStepCompleted(false);
+    setGoalId(null);
+    setPlan(null);
+    setPlanStepMeta([]);
+    setTodayTasks([]);
+    setAllGoalTasks([]);
+    setViewMode("plan");
+    setView("CREATE_GOAL");
   };
 
   const handleBackNavigation = () => {
@@ -393,19 +519,111 @@ export default function Home() {
     ? remainingGoals
     : remainingGoals.slice(0, 3);
 
-  const derivedActiveStep = planSteps.length > 0
-    ? planSteps.findIndex((step) => {
-        const stepTasks = allGoalTasks.filter(
-          (task) => String(task.plan_step_id) === String(step.id)
-        );
-        return stepTasks.some((task) => task.status === "pending");
-      })
-    : -1;
+  const roadmapSteps = plan?.plan ?? [];
+
+  const derivedActiveStep = (() => {
+    if (!planStepMeta.length) return -1;
+
+    // Primary source: plan_steps status from backend progression engine.
+    const firstIncompleteStep = planStepMeta.findIndex(
+      (step) => step.status !== "completed"
+    );
+    if (firstIncompleteStep !== -1) {
+      return firstIncompleteStep;
+    }
+
+    // Fallback: pending tasks if status sync is delayed.
+    return planStepMeta.findIndex((step) => {
+      const stepTasks = allGoalTasks.filter(
+        (task) => String(task.plan_step_id) === String(step.id)
+      );
+      return stepTasks.some((task) => task.status === "pending");
+    });
+  })();
+
+  const safeActiveStepIndex =
+    activeStepIndex >= 0 && activeStepIndex < roadmapSteps.length
+      ? activeStepIndex
+      : 0;
 
   const finalActiveStep =
     derivedActiveStep !== -1 && derivedActiveStep !== undefined
       ? derivedActiveStep
-      : activeStepIndex;
+      : safeActiveStepIndex;
+
+  const getCurrentCycle = (tasks: Task[]) => {
+    const visible = tasks.filter((task) => task.status !== "archived");
+    if (!visible.length) {
+      return {
+        cycleTasks: [] as Task[],
+        cycleStart: null as number | null,
+      };
+    }
+
+    const pendingTasks = visible.filter((task) => task.status === "pending");
+    if (!pendingTasks.length) {
+      const oldest = visible
+        .map((task) => (task.created_at ? new Date(task.created_at).getTime() : 0))
+        .filter((time) => Number.isFinite(time) && time > 0)
+        .sort((a, b) => a - b)[0] ?? null;
+
+      return {
+        cycleTasks: visible,
+        cycleStart: oldest,
+      };
+    }
+
+    const pendingTimes = pendingTasks
+      .map((task) => (task.created_at ? new Date(task.created_at).getTime() : 0))
+      .filter((time) => Number.isFinite(time) && time > 0);
+
+    if (!pendingTimes.length) {
+      return {
+        cycleTasks: pendingTasks,
+        cycleStart: null as number | null,
+      };
+    }
+
+    const cycleStart = Math.min(...pendingTimes);
+
+    const cycleTasks = visible.filter((task) => {
+      const createdAt = task.created_at ? new Date(task.created_at).getTime() : 0;
+      return Number.isFinite(createdAt) && createdAt >= cycleStart;
+    });
+
+    return {
+      cycleTasks,
+      cycleStart,
+    };
+  };
+
+  const getStepProgress = (tasks: Task[], isCompletedStep: boolean) => {
+    if (isCompletedStep) {
+      return { percent: 100, done: 1, total: 1 };
+    }
+
+    const visible = tasks.filter((task) => task.status !== "archived");
+    const { cycleTasks, cycleStart } = getCurrentCycle(visible);
+    const cycleTotal = cycleTasks.length;
+
+    if (!cycleTotal) {
+      return { percent: 0, done: 0, total: 0 };
+    }
+
+    const cycleDone = cycleTasks.filter((task) => task.status === "done").length;
+
+    const historicalDone = visible.filter((task) => {
+      if (task.status !== "done") return false;
+      if (cycleStart === null) return false;
+      const createdAt = task.created_at ? new Date(task.created_at).getTime() : 0;
+      return Number.isFinite(createdAt) && createdAt > 0 && createdAt < cycleStart;
+    }).length;
+
+    const effectiveDone = Math.min(cycleTotal, cycleDone + historicalDone);
+    const percent = Math.round((effectiveDone / cycleTotal) * 100);
+
+    return { percent, done: effectiveDone, total: cycleTotal };
+  };
 
   const effectiveView =
     view === "TASKS" && viewMode === "plan" ? "PLAN" : view;
@@ -598,20 +816,55 @@ export default function Home() {
               void generateTodaysTasks();
             }}
             className="inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
-            disabled={!goalId}
+            disabled={!goalId || planCompleted || generatingTasks}
           >
-            Give me today&apos;s tasks
+            {generatingTasks
+              ? "Generating..."
+              : sessionCtaState === "active"
+                ? "Continue Today"
+                : sessionCtaState === "completed"
+                  ? "Start Next Session"
+                  : "Start Today"}
           </button>
         </div>
 
+        {generateError && (
+          <div className="mt-3 text-sm text-red-500 dark:text-red-400">
+            ❌ {generateError}
+          </div>
+        )}
+
+        <div className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+          Plan improvement will be available after a few sessions.
+        </div>
+
         <div className="mt-6">
-          <PlanView plan={plan} tasks={allGoalTasks} planSteps={planSteps} />
+          <PlanView
+            plan={plan}
+            tasks={allGoalTasks}
+            planSteps={planStepMeta}
+          />
         </div>
       </div>
     </div>
   );
 
   const renderTasksView = () => (
+    planCompleted ? (
+      <div className="p-6 border rounded-lg bg-green-50 dark:bg-green-900/20 dark:border-green-700">
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">🏁 Plan Completed</h2>
+        <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+          You&apos;ve successfully completed all steps. Great job!
+        </p>
+
+        <button
+          onClick={restartPlan}
+          className="mt-4 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+        >
+          Start New Plan
+        </button>
+      </div>
+    ) : (
     <div className="flex flex-col gap-6 lg:flex-row">
       <aside className="w-full lg:w-72 lg:flex-shrink-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5 shadow-sm text-gray-900 dark:text-gray-100">
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-blue-600 dark:text-blue-400">
@@ -622,25 +875,42 @@ export default function Home() {
         </h2>
 
         <div className="mt-6 space-y-3">
-          {plan?.plan?.length ? (
-            plan.plan.map((step, index) => (
-              <button
-                key={`${step.title}-${index}`}
-                onClick={() => {
-                  setActiveStepIndex(index);
-                }}
-                className={`w-full text-left rounded-lg border px-3 py-3 text-sm text-gray-700 dark:text-gray-200 transition ${
-                  index === finalActiveStep
-                    ? "bg-blue-50 border-blue-500 dark:bg-blue-900/20 dark:border-blue-500"
-                    : "border-gray-200 bg-gray-50 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
-                }`}
-              >
-                <span className="mr-2 text-xs font-semibold text-blue-600 dark:text-blue-400">
-                  {index + 1}
-                </span>
-                {step.title}
-              </button>
-            ))
+          {roadmapSteps.length ? (
+            roadmapSteps.map((step, index) => {
+              const stepId = planStepMeta[index]?.id;
+              const stepTasks = allGoalTasks.filter(
+                (task) => String(task.plan_step_id) === String(stepId)
+              );
+              const isCompletedStep = planStepMeta[index]?.status === "completed";
+              const { percent: progress } = getStepProgress(stepTasks, isCompletedStep);
+              const isActive = index === finalActiveStep;
+
+              return (
+                <button
+                  key={`${step.title}-${index}`}
+                  onClick={() => {
+                    setActiveStepIndex(index);
+                  }}
+                  className={`w-full text-left rounded-lg border px-3 py-3 text-sm text-gray-700 dark:text-gray-200 transition ${
+                    isActive
+                      ? "bg-blue-50 border-blue-400 dark:bg-blue-900/20 dark:border-blue-500"
+                      : "border-gray-200 bg-gray-50 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+                  }`}
+                >
+                  <span className="mr-2 text-xs font-semibold text-blue-600 dark:text-blue-400">
+                    {index + 1}
+                  </span>
+                  {step.title}
+
+                  <div className="mt-2 h-1 bg-gray-200 rounded dark:bg-gray-700">
+                    <div
+                      className="h-1 bg-blue-500 rounded"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </button>
+              );
+            })
           ) : (
             <div className="rounded-lg border border-dashed border-gray-300 px-3 py-4 text-sm text-gray-600 dark:border-gray-600 dark:text-gray-300">
               Plan titles will appear here after you build a roadmap.
@@ -659,14 +929,103 @@ export default function Home() {
         )} */}
 
         <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-5 shadow-sm text-gray-900 dark:text-gray-100">
-          {todayTasks.length > 0 ? (
+          {(() => {
+            const currentStepMeta = planStepMeta[finalActiveStep];
+            const currentStepTasks = currentStepMeta
+              ? allGoalTasks.filter(
+                  (task) => String(task.plan_step_id) === String(currentStepMeta.id)
+                )
+              : [];
+            const { percent: progressPercent } = getStepProgress(
+              currentStepTasks,
+              currentStepMeta?.status === "completed"
+            );
+
+            return (
+              <div className="mb-4 p-4 border rounded bg-gray-50 dark:bg-gray-900 dark:border-gray-700">
+                <p className="text-sm text-gray-500 dark:text-gray-400">Current Step</p>
+                <h3 className="font-semibold text-gray-900 dark:text-gray-100">
+                  {roadmapSteps[finalActiveStep]?.title || "Current step"}
+                </h3>
+
+                <div className="mt-2">
+                  <div className="flex justify-between text-xs mb-1 text-gray-600 dark:text-gray-300">
+                    <span>Progress</span>
+                    <span>{progressPercent}%</span>
+                  </div>
+
+                  <div className="w-full bg-gray-200 h-2 rounded dark:bg-gray-700">
+                    <div
+                      className="bg-blue-500 h-2 rounded"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {stepCompleted && (
+            <div className="p-6 border rounded-lg bg-green-50 dark:bg-green-900/20 dark:border-green-700 mb-4">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Nice work — you’ve completed this step 🎉</h2>
+              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+                Ready to move to the next step
+              </p>
+
+              <button
+                className="mt-4 rounded bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+                onClick={() => {
+                  void generateTodaysTasks();
+                }}
+              >
+                Continue to Next Step
+              </button>
+            </div>
+          )}
+
+          {sessionCompleted ? (
+            <>
+              <button
+                onClick={() => { setViewMode("plan"); setView("PLAN"); }}
+                className="mb-4 text-sm text-blue-600 hover:underline dark:text-blue-400"
+              >
+                ← Back to Plan
+              </button>
+
+              <div className="p-6 text-center border rounded dark:border-gray-700">
+                <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
+                  🎉 You&apos;ve completed today&apos;s tasks!
+                </h2>
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  {sessionCompletedMessage || "Nice work today 🎉"}
+                </p>
+
+                <button
+                  className="mt-3 bg-blue-600 text-white px-4 py-2 rounded"
+                  onClick={() => {
+                    if (goalId) {
+                      void generateTodaysTasks();
+                    }
+                  }}
+                >
+                  Generate next set
+                </button>
+              </div>
+            </>
+          ) : todayTasks.length > 0 ? (
             <>
               
               {(() => {
-                const tasksToRender = todayTasks;
+                const tasksToRender = getCurrentCycle(todayTasks).cycleTasks;
 
                 return (
                   <>
+                    {stepCompleted && (
+                      <h3 className="text-sm text-gray-500 dark:text-gray-400 mt-4 mb-2">
+                        What you completed
+                      </h3>
+                    )}
+
                     <button
                       onClick={() => { setViewMode("plan"); setView("PLAN"); }}
                       className="mb-4 text-sm text-blue-600 hover:underline dark:text-blue-400"
@@ -678,6 +1037,9 @@ export default function Home() {
                     <TasksView
                       tasksToRender={tasksToRender}
                       token={token!}
+                      onStepCompleted={() => {
+                        setStepCompleted(true);
+                      }}
                       refreshTasks={async () => {
                         if (goalId) {
                           await fetchTasks(goalId);
@@ -690,27 +1052,13 @@ export default function Home() {
                         }
                       }}
                     />
+
+                    <div className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                      Plan improvement will be available after a few sessions.
+                    </div>
                   </>
                 );
               })()}
-
-              {goalId && todayTasks.some((t) => t.status === "pending") && (
-                <div className="mt-6 text-center">
-                  <button
-                    className="rounded-lg bg-blue-600 px-4 py-2 text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                    onClick={adaptTasks}
-                    disabled={adapting}
-                  >
-                    {adapting ? "Improving..." : "Improve My Plan"}
-                  </button>
-
-                  {adaptError && (
-                    <div className="mt-3 text-sm text-red-500 dark:text-red-400">
-                      ❌ {adaptError}
-                    </div>
-                  )}
-                </div>
-              )}
             </>
           ) : (
             <div className="text-sm text-gray-600 dark:text-gray-300">
@@ -720,43 +1068,8 @@ export default function Home() {
         </div>
       </div>
     </div>
+    )
   );
-
-  /* =========================
-     ADAPT
-  ========================= */
-  const adaptTasks = async () => {
-    const apiBaseUrl = getApiBaseUrl();
-
-    if (!goalId || !apiBaseUrl || !token) return;
-
-    setAdapting(true);
-    setAdaptError(null);
-
-    try {
-      const res = await fetch(`${apiBaseUrl}/tasks/adapt`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ goal_id: goalId }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        setAdaptError(err.error || "Adapt failed");
-        return;
-      }
-
-      await fetchTasks(goalId);
-    } catch (err) {
-      console.error(err);
-      setAdaptError("Network error");
-    } finally {
-      setAdapting(false);
-    }
-  };
 
   /* =========================
      UI

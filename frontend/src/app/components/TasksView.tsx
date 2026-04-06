@@ -16,11 +16,13 @@ export default function TasksView({
   token,
   refreshTasks,
   refreshPlan,
+  onStepCompleted,
 }: {
   tasksToRender: Task[];
   token: string;
   refreshTasks: () => void | Promise<void>;
   refreshPlan?: () => void | Promise<void>;
+  onStepCompleted?: () => void;
 }) {
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
@@ -41,6 +43,8 @@ export default function TasksView({
     () => tasksToRender.filter((task) => task.status !== "archived"),
     [tasksToRender]
   );
+
+  const isPendingTask = (task: Task) => task.status === "pending" || !task.status;
 
   const completedTasks = useMemo(
     () => visibleTasks.filter((task) => task.status === "done"),
@@ -82,6 +86,13 @@ export default function TasksView({
         return;
       }
 
+      const response = await res.json();
+
+      if (response?.stepCompleted) {
+        onStepCompleted?.();
+      }
+
+      console.log("🔁 REFRESHING AFTER UPDATE");
       await refreshTasks();
       if (refreshPlan) {
         await refreshPlan();
@@ -104,13 +115,19 @@ export default function TasksView({
 
       <div className="space-y-3">
         {sortedTasks.map((task) => (
-          <div
-            key={task.id}
-            className={`rounded-lg border p-4 transition cursor-pointer ${getTaskStyles(task.status)}`}
-            onClick={() => {
-              setExpandedTaskId((prev) => (prev === task.id ? null : task.id));
-            }}
-          >
+          (() => {
+            const isExpanded =
+              expandedTaskId === task.id ||
+              (expandedTaskId === null && isPendingTask(task));
+
+            return (
+              <div
+                key={task.id}
+                className={`rounded-lg border p-4 transition cursor-pointer ${getTaskStyles(task.status)}`}
+                onClick={() => {
+                  setExpandedTaskId((prev) => (prev === task.id ? null : task.id));
+                }}
+              >
             <p className="text-xs font-medium uppercase mb-1">
               {task.status === "done" && "Completed"}
               {task.status === "skipped" && "Skipped"}
@@ -125,7 +142,7 @@ export default function TasksView({
               {task.title}
             </h3>
 
-            {expandedTaskId === task.id && (
+                {isExpanded && (
               <>
                 <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">{task.description}</p>
 
@@ -157,8 +174,10 @@ export default function TasksView({
                   </div>
                 )}
               </>
-            )}
-          </div>
+                )}
+              </div>
+            );
+          })()
         ))}
       </div>
 

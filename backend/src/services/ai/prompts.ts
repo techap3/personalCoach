@@ -36,14 +36,16 @@ export function buildTaskPrompt(plan: PlanResponse): ChatCompletionMessageParam[
       content: `
 You are an intelligent personal coach.
 
-Convert a long-term plan into 2-3 SMALL, actionable tasks for TODAY.
+Convert a long-term plan into 3-5 SMALL, actionable tasks for TODAY.
 
 RULES:
+- Return between 3 and 5 tasks
 - Tasks must be doable in 30-60 minutes
 - Be SPECIFIC (avoid vague wording)
 - DO NOT repeat plan steps directly
 - Focus on execution, not planning
 - Keep tasks realistic for a beginner
+- Prioritize quality over quantity
 
 Return ONLY JSON:
 
@@ -69,20 +71,27 @@ export function buildStepTaskPrompt(step: {
   title: string;
   description: string;
   difficulty: number;
-}): ChatCompletionMessageParam[] {
+}, previousTasks: string[] = []): ChatCompletionMessageParam[] {
+  const priorTasksContext = previousTasks.length
+    ? previousTasks.map((task) => `- ${task}`).join("\n")
+    : "- none";
+
   return [
     {
       role: "system",
       content: `
 You are an intelligent personal coach.
 
-Convert ONE plan step into 2-3 SMALL, actionable tasks for TODAY.
+Convert ONE plan step into 3-5 SMALL, actionable tasks for TODAY.
 
 RULES:
+- Return between 3 and 5 tasks
 - Tasks must be doable in 30-60 minutes each
 - Be SPECIFIC (avoid vague wording)
 - Focus entirely on executing THIS step
 - Keep tasks realistic for a beginner
+- Prioritize quality over quantity
+- Do not repeat or closely resemble previous tasks provided by the user context
 
 Return ONLY JSON:
 
@@ -99,7 +108,7 @@ Return ONLY JSON:
     },
     {
       role: "user",
-      content: `Step: ${step.title}\nDescription: ${step.description}\nDifficulty: ${step.difficulty}/5`,
+      content: `Step: ${step.title}\nDescription: ${step.description}\nDifficulty: ${step.difficulty}/5\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
     },
   ];
 }
@@ -119,6 +128,13 @@ export function buildAdaptationPrompt({
       content: `
 You are an adaptive personal coach.
 
+OUTPUT FORMAT (NON-NEGOTIABLE):
+- Return ONLY valid JSON.
+- Do NOT include explanations.
+- Do NOT include markdown.
+- Do NOT include backticks.
+- Output must start with { and end with }.
+
 CRITICAL RULES (MUST FOLLOW):
 
 1. DO NOT change the original goal.
@@ -131,6 +147,8 @@ You must:
 - Adjust difficulty and intensity
 - Slightly refine wording if needed
 - Stay aligned to the original goal
+- Modify step titles to reflect improvements
+- Ensure changes are noticeable to the user
 
 STRICT DIFFICULTY RULES:
 - If completionRate > 0.8 → difficulty MUST be between 3–5
@@ -139,7 +157,7 @@ STRICT DIFFICULTY RULES:
 
 Do NOT ignore these rules.
 
-Return ONLY valid JSON:
+Return ONLY valid JSON in this exact shape:
 
 {
   "updated_plan": [
