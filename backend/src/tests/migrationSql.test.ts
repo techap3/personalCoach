@@ -17,3 +17,16 @@ describe("task_type migration safety", () => {
     expect(sql).toMatch(/to_regclass\('tasks'\)\s+is\s+not\s+null/i);
   });
 });
+
+describe("task_sessions uniqueness migration", () => {
+  it("enforces uniqueness on goal_id + plan_step_id + session_date", () => {
+    const migrationPath = path.resolve(
+      process.cwd(),
+      "db/migrations/20260406_add_unique_task_session_per_step_day.sql"
+    );
+
+    const sql = fs.readFileSync(migrationPath, "utf8");
+
+    expect(sql).toMatch(/unique\s*\(\s*goal_id\s*,\s*plan_step_id\s*,\s*session_date\s*\)/i);
+  });
+});
