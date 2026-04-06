@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   enforceTaskCount,
   MIN_TASKS,
   MAX_TASKS,
+  sanitizeGeneratedTasks,
   type GeneratedTask,
 } from "../services/ai/taskLimits";
 
@@ -94,5 +95,21 @@ describe("task limits enforcement", () => {
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
     expect(types).toContain("action");
     expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
+  });
+
+  it("logs warning when task_type is missing or invalid and falls back to learn", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const output = sanitizeGeneratedTasks([
+      { title: "Missing Type", description: "A", difficulty: 2 },
+      { title: "Invalid Type", description: "B", difficulty: 2, task_type: "unknown" },
+    ]);
+
+    expect(output).toHaveLength(2);
+    expect(output[0]?.task_type).toBe("learn");
+    expect(output[1]?.task_type).toBe("learn");
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+
+    warnSpy.mockRestore();
   });
 });

@@ -122,11 +122,20 @@ function toTask(value: unknown): GeneratedTask | null {
 
   if (!title) return null;
 
+  const rawTaskType = maybeTask.task_type;
+  const resolvedTaskType = normalizeTaskType(rawTaskType);
+  if (typeof rawTaskType !== "string" || normalizeTaskType(rawTaskType) !== rawTaskType.trim().toLowerCase()) {
+    console.warn("[tasks] Applied fallback task_type=learn for invalid or missing task_type", {
+      title,
+      original_task_type: rawTaskType,
+    });
+  }
+
   return {
     title,
     description,
     difficulty: clampDifficulty(maybeTask.difficulty),
-    task_type: normalizeTaskType(maybeTask.task_type),
+    task_type: resolvedTaskType,
   };
 }
 

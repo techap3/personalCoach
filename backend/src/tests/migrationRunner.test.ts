@@ -36,7 +36,7 @@ describe("migration runner", () => {
     queryMock
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: "20260406_add_task_type_to_tasks.sql" }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] });
 
@@ -110,5 +110,35 @@ describe("migration runner", () => {
 
     expect(connectMock).not.toHaveBeenCalled();
     expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it("skips already executed migration when claim insert conflicts", async () => {
+    readdirMock.mockResolvedValue(["20260406_add_task_type_to_tasks.sql"]);
+    readFileMock.mockResolvedValue("select 1;");
+
+    queryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const { runMigrations } = await import("../scripts/migrationRunner");
+
+    const result = await runMigrations({
+      NODE_ENV: "development",
+      DATABASE_URL: "postgresql://postgres:secret@localhost:5432/postgres",
+    } as NodeJS.ProcessEnv);
+
+    expect(result.executed).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.total).toBe(1);
+    expect(result.skippedRun).toBe(false);
+    expect(logSpy).toHaveBeenCalledWith(
+      "[migrate] Skipping already executed: 20260406_add_task_type_to_tasks.sql"
+    );
+
+    logSpy.mockRestore();
   });
 });

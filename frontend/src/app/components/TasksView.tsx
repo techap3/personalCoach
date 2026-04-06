@@ -46,16 +46,18 @@ export default function TasksView({
   );
 
   const getTaskTypeStyles = (taskType?: Task["task_type"]) => {
-    if (taskType === "action") {
+    const resolvedTaskType = taskType || "learn";
+
+    if (resolvedTaskType === "action") {
       return "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-200 dark:border-blue-700";
     }
-    if (taskType === "learn") {
+    if (resolvedTaskType === "learn") {
       return "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-200 dark:border-indigo-700";
     }
-    if (taskType === "reflect") {
+    if (resolvedTaskType === "reflect") {
       return "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-200 dark:border-emerald-700";
     }
-    if (taskType === "review") {
+    if (resolvedTaskType === "review") {
       return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:border-amber-700";
     }
 
@@ -63,8 +65,8 @@ export default function TasksView({
   };
 
   const formatTaskType = (taskType?: Task["task_type"]) => {
-    if (!taskType) return "Learn";
-    return taskType.charAt(0).toUpperCase() + taskType.slice(1);
+    const resolvedTaskType = taskType || "learn";
+    return resolvedTaskType.charAt(0).toUpperCase() + resolvedTaskType.slice(1);
   };
 
   const isPendingTask = (task: Task) => task.status === "pending" || !task.status;

@@ -14,5 +14,6 @@ describe("task_type migration safety", () => {
     expect(sql).toMatch(/set\s+task_type\s*=\s*'learn'/i);
     expect(sql).toMatch(/task_type\s+is\s+null/i);
     expect(sql).toMatch(/task_type\s+not\s+in\s*\('action',\s*'learn',\s*'reflect',\s*'review'\)/i);
+    expect(sql).toMatch(/to_regclass\('tasks'\)\s+is\s+not\s+null/i);
   });
 });

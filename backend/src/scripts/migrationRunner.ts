@@ -135,29 +135,31 @@ export async function runMigrations(env: MigrationEnv = process.env): Promise<Mi
     let skippedCount = 0;
 
     for (const filename of migrationFiles) {
-      const { rows } = await client.query(
-        "select 1 from migrations where id = $1 limit 1",
-        [filename]
-      );
-
-      if (rows.length > 0) {
-        console.log(`[migrate] Skipping already executed: ${filename}`);
-        skippedCount += 1;
-        continue;
-      }
-
       const filePath = path.join(MIGRATIONS_DIR, filename);
       const sql = await fs.readFile(filePath, "utf8");
 
-      console.log(`[migrate] Running migration: ${filename}`);
-
       try {
         await client.query("begin");
-        await client.query(sql);
-        await client.query(
-          "insert into migrations (id, executed_at) values ($1, now())",
+
+        const claim = await client.query(
+          `
+            insert into migrations (id, executed_at)
+            values ($1, now())
+            on conflict (id) do nothing
+            returning id
+          `,
           [filename]
         );
+
+        if ((claim.rowCount ?? 0) === 0) {
+          await client.query("rollback");
+          console.log(`[migrate] Skipping already executed: ${filename}`);
+          skippedCount += 1;
+          continue;
+        }
+
+        console.log(`[migrate] Running migration: ${filename}`);
+        await client.query(sql);
         await client.query("commit");
         console.log(`[migrate] Migration complete: ${filename}`);
         executedCount += 1;
