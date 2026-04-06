@@ -694,4 +694,39 @@ describe("Flow tests", () => {
 
     expect(activeEmpty).toBeUndefined();
   });
+
+  it("returns deterministic session summary when a session completes", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(generated.status).toBe(200);
+
+    await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "done" });
+
+    await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[1].id, status: "done" });
+
+    const finalUpdate = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[2].id, status: "skipped" });
+
+    expect(finalUpdate.status).toBe(200);
+    expect(finalUpdate.body.sessionCompleted).toBe(true);
+    expect(finalUpdate.body.session_summary).toEqual({
+      completed: 2,
+      skipped: 1,
+      completion_rate: 0.67,
+      message: "Good effort. Try to complete a bit more tomorrow.",
+    });
+  });
 });

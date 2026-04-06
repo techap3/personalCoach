@@ -30,3 +30,17 @@ describe("task_sessions uniqueness migration", () => {
     expect(sql).toMatch(/unique\s*\(\s*goal_id\s*,\s*plan_step_id\s*,\s*session_date\s*\)/i);
   });
 });
+
+describe("task_sessions summary migration", () => {
+  it("adds summary_json to task_sessions", () => {
+    const migrationPath = path.resolve(
+      process.cwd(),
+      "db/migrations/20260406_add_task_session_summary.sql"
+    );
+
+    const sql = fs.readFileSync(migrationPath, "utf8");
+
+    expect(sql).toMatch(/alter\s+table\s+if\s+exists\s+task_sessions/i);
+    expect(sql).toMatch(/add\s+column\s+if\s+not\s+exists\s+summary_json\s+jsonb/i);
+  });
+});

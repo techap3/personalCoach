@@ -18,12 +18,19 @@ export default function TasksView({
   refreshTasks,
   refreshPlan,
   onStepCompleted,
+  onSessionCompleted,
 }: {
   tasksToRender: Task[];
   token: string;
   refreshTasks: () => void | Promise<void>;
   refreshPlan?: () => void | Promise<void>;
   onStepCompleted?: () => void;
+  onSessionCompleted?: (summary: {
+    completed: number;
+    skipped: number;
+    completion_rate: number;
+    message: string;
+  }) => void;
 }) {
   const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
@@ -115,6 +122,10 @@ export default function TasksView({
 
       if (response?.stepCompleted) {
         onStepCompleted?.();
+      }
+
+      if (response?.sessionCompleted && response?.session_summary) {
+        onSessionCompleted?.(response.session_summary);
       }
 
       console.log("🔁 REFRESHING AFTER UPDATE");

@@ -22,6 +22,7 @@ import {
   getUserMemory,
 } from "../services/memory/userMemory";
 import { getTargetDifficulty } from "../services/difficultyService";
+import { generateSessionSummary } from "../services/sessionSummary";
 
 const router = Router();
 const RECENT_SESSION_LOOKBACK = 5;
@@ -245,6 +246,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     if ((existingSessionTasks || []).length > 0) {
       return res.json({
         type: "ACTIVE_SESSION",
+        sessionStatus: "active",
         session: workingSession,
         tasks: existingSessionTasks,
       });
@@ -480,9 +482,11 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
       });
     }
 
+    const sessionSummary = await generateSessionSummary(task.session_id, supabase);
+
     await supabase
       .from("task_sessions")
-      .update({ status: "completed" })
+      .update({ status: "completed", summary_json: sessionSummary })
       .eq("id", task.session_id);
 
     console.log("SESSION COMPLETED:", task.session_id);
@@ -497,6 +501,8 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
       success: true,
       sessionCompleted: true,
       stepCompleted,
+      session_summary: sessionSummary,
+      message: sessionSummary.message,
     });
   }
 
@@ -611,6 +617,7 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
 
     return res.json({
       type: session.status === "active" ? "ACTIVE_SESSION" : "LATEST_SESSION",
+      sessionStatus: session.status,
       session,
       tasks: tasks || [],
     });
@@ -618,6 +625,7 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
 
   return res.json({
     type: "NO_SESSION",
+    sessionStatus: "none",
     tasks: [],
   });
 });

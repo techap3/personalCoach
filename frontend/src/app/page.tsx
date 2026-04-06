@@ -47,6 +47,13 @@ type Goal = {
   created_at?: string;
 };
 
+type SessionSummary = {
+  completed: number;
+  skipped: number;
+  completion_rate: number;
+  message: string;
+};
+
 export default function Home() {
 
   const [user, setUser] = useState<User | null>(null);
@@ -67,6 +74,7 @@ export default function Home() {
 
   const [sessionCompleted, setSessionCompleted] = useState(false);
   const [sessionCompletedMessage, setSessionCompletedMessage] = useState<string | null>(null);
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [stepCompleted, setStepCompleted] = useState(false);
   const [planCompleted, setPlanCompleted] = useState(false);
   const [generatingTasks, setGeneratingTasks] = useState(false);
@@ -137,6 +145,7 @@ export default function Home() {
     setViewMode("plan");
     setSessionCompleted(false);
     setSessionCompletedMessage(null);
+    setSessionSummary(null);
     setStepCompleted(false);
     setPlanCompleted(false);
     setGeneratingTasks(false);
@@ -160,11 +169,22 @@ export default function Home() {
       });
 
       const data = await res.json();
+      const responseType = data?.type;
+      const responseSessionStatus = data?.sessionStatus || data?.session?.status;
+      const explicitCompleted =
+        data?.sessionCompleted === true ||
+        (responseType === "LATEST_SESSION" && responseSessionStatus === "completed");
+      const explicitActiveOrIncomplete =
+        responseType === "ACTIVE_SESSION" || responseSessionStatus === "active";
 
       if (data?.planCompleted) {
         setPlanCompleted(true);
-        setSessionCompleted(false);
-        setSessionCompletedMessage(null);
+        // Preserve existing completion summary unless backend explicitly starts an active session.
+        if (explicitActiveOrIncomplete) {
+          setSessionCompleted(false);
+          setSessionCompletedMessage(null);
+          setSessionSummary(null);
+        }
         setStepCompleted(false);
         setSessionCtaState("completed");
         setTodayTasks([]);
@@ -181,15 +201,28 @@ export default function Home() {
         setSessionCtaState("none");
       }
 
-      if (data?.sessionCompleted) {
+      if (explicitCompleted) {
+        const nextSummary = data?.session_summary || data?.session?.summary_json || sessionSummary;
+        const nextMessage =
+          data?.message ||
+          nextSummary?.message ||
+          sessionCompletedMessage ||
+          "Nice work today 🎉";
+
         setSessionCompleted(true);
-        setSessionCompletedMessage(data.message || "Nice work today 🎉");
+        setSessionCompletedMessage(nextMessage);
+        if (nextSummary) {
+          setSessionSummary(nextSummary);
+        }
         setTodayTasks([]);
         return [] as Task[];
       }
 
-      setSessionCompleted(false);
-      setSessionCompletedMessage(null);
+      if (explicitActiveOrIncomplete) {
+        setSessionCompleted(false);
+        setSessionCompletedMessage(null);
+        setSessionSummary(null);
+      }
 
       const normalizedTasks: Task[] = (Array.isArray(data) ? data : data.tasks || []).map((task: Task) => ({
         ...task,
@@ -202,7 +235,12 @@ export default function Home() {
       console.error("❌ Fetch tasks error:", err);
       return [] as Task[];
     }
-  }, [getApiBaseUrl, token]);
+  }, [
+    getApiBaseUrl,
+    token,
+    sessionSummary,
+    sessionCompletedMessage,
+  ]);
 
   /* =========================
      FETCH PLAN
@@ -403,8 +441,14 @@ export default function Home() {
 
       if (payload?.type === "ACTIVE_SESSION") {
         setSessionCtaState("active");
+        setSessionCompleted(false);
+        setSessionCompletedMessage(null);
+        setSessionSummary(null);
       } else if (payload?.type === "NEW_SESSION") {
         setSessionCtaState("active");
+        setSessionCompleted(false);
+        setSessionCompletedMessage(null);
+        setSessionSummary(null);
       }
 
       const generatedTasks: Task[] = Array.isArray(payload)
@@ -421,6 +465,7 @@ export default function Home() {
       if (generatedTasks.length === 0 && payload?.message) {
         setSessionCompleted(true);
         setSessionCompletedMessage(payload.message);
+        setSessionSummary(payload.session_summary || null);
         setTodayTasks([]);
         await fetchAllGoalTasks(goalId);
         await fetchAllTasks();
@@ -476,6 +521,7 @@ export default function Home() {
     setPlanCompleted(false);
     setSessionCompleted(false);
     setSessionCompletedMessage(null);
+    setSessionSummary(null);
     setStepCompleted(false);
     setGoalId(null);
     setPlan(null);
@@ -995,10 +1041,26 @@ export default function Home() {
 
               <div className="p-6 text-center border rounded dark:border-gray-700">
                 <h2 className="text-xl font-semibold mb-2 text-gray-900 dark:text-gray-100">
-                  🎉 You&apos;ve completed today&apos;s tasks!
+                  🎉 You completed today&apos;s session
                 </h2>
-                <p className="text-sm text-gray-600 dark:text-gray-300">
-                  {sessionCompletedMessage || "Nice work today 🎉"}
+
+                <div className="mt-3 grid grid-cols-2 gap-3 text-left">
+                  <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Completed</p>
+                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {sessionSummary?.completed ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900">
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Skipped</p>
+                    <p className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                      {sessionSummary?.skipped ?? 0}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">
+                  {sessionSummary?.message || sessionCompletedMessage || "Nice work today 🎉"}
                 </p>
 
                 <button
@@ -1009,7 +1071,7 @@ export default function Home() {
                     }
                   }}
                 >
-                  Generate next set
+                  Start next session
                 </button>
               </div>
             </>
@@ -1040,6 +1102,11 @@ export default function Home() {
                       token={token!}
                       onStepCompleted={() => {
                         setStepCompleted(true);
+                      }}
+                      onSessionCompleted={(summary) => {
+                        setSessionCompleted(true);
+                        setSessionCompletedMessage(summary.message);
+                        setSessionSummary(summary);
                       }}
                       refreshTasks={async () => {
                         if (goalId) {
