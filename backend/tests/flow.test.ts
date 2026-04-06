@@ -246,8 +246,8 @@ vi.mock("../src/db/supabase", () => {
             const duplicate = table.find(
               (row) =>
                 row.goal_id === item.goal_id &&
-                row.plan_step_id === item.plan_step_id &&
-                row.session_date === item.session_date
+                row.session_date === item.session_date &&
+                (row.session_type || "primary") === (item.session_type || "primary")
             );
 
             if (duplicate) {
@@ -255,7 +255,7 @@ vi.mock("../src/db/supabase", () => {
                 data: null,
                 error: {
                   message:
-                    'duplicate key value violates unique constraint "task_sessions_goal_id_session_date_key"',
+                    'duplicate key value violates unique constraint "task_sessions_goal_session_date_type_key"',
                   code: "23505",
                 },
               };
@@ -266,6 +266,9 @@ vi.mock("../src/db/supabase", () => {
         const inserted = this.insertValues.map((item) => {
           const row: Row = { ...item };
           if (!row.id) row.id = nextId(this.table.slice(0, -1) || "row");
+          if (this.table === "task_sessions" && typeof row.generation_locked === "undefined") {
+            row.generation_locked = false;
+          }
           if (!row.created_at) row.created_at = new Date().toISOString();
           table.push(row);
           return clone(row);
@@ -348,6 +351,13 @@ const authHeader = () => {
   const payload = Buffer.from(JSON.stringify({ sub: "user-1" })).toString("base64url");
   const signature = Buffer.from("signature").toString("base64url");
   return `Bearer ${header}.${payload}.${signature}`;
+};
+
+const getLocalDateString = () => {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    .toISOString()
+    .split("T")[0];
 };
 
 async function createGoal() {
@@ -434,6 +444,8 @@ describe("Flow tests", () => {
     expect(response.body.tasks).toHaveLength(3);
     expect(mockState.tables.task_sessions).toHaveLength(1);
     expect(mockState.tables.task_sessions[0].status).toBe("active");
+    expect(mockState.tables.task_sessions[0].session_type).toBe("primary");
+    expect(response.body.sessionType).toBe("primary");
   });
 
   it("should not regenerate tasks if session active", async () => {
@@ -458,7 +470,7 @@ describe("Flow tests", () => {
     expect(secondIds).toEqual(firstIds);
   });
 
-  it("should generate new tasks for next step when prior step session is completed", async () => {
+  it("should generate bonus session for next step when primary session is completed", async () => {
     const goalId = await createGoal();
 
     const first = await request(app)
@@ -480,15 +492,18 @@ describe("Flow tests", () => {
 
     expect(second.status).toBe(200);
     expect(second.body.type).toBe("NEW_SESSION");
+    expect(second.body.sessionType).toBe("bonus");
     expect(second.body.tasks).toHaveLength(3);
 
     const firstStep = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
     const secondStep = mockState.tables.plan_steps.find((s: any) => s.step_index === 1);
     const secondTaskStepIds = second.body.tasks.map((t: any) => t.plan_step_id);
+    const secondSession = mockState.tables.task_sessions.find((s: any) => s.id === second.body.session.id);
 
     expect(firstStep?.status).toBe("completed");
     expect(secondStep?.status).toBe("active");
     expect(secondTaskStepIds.every((id: string) => id === secondStep?.id)).toBe(true);
+    expect(secondSession?.session_type).toBe("bonus");
   });
 
   it("should mark step completed after tasks done", async () => {
@@ -564,6 +579,7 @@ describe("Flow tests", () => {
 
     expect(second.status).toBe(200);
     expect(second.body.type).toBe("NEW_SESSION");
+    expect(second.body.sessionType).toBe("bonus");
     expect(second.body.tasks).toHaveLength(3);
 
     const firstTaskA = mockState.tables.tasks.find(
@@ -575,6 +591,92 @@ describe("Flow tests", () => {
 
     expect(firstTaskA?.status).toBe("done");
     expect(firstTaskB?.status).toBe("skipped");
+  });
+
+  it("creates primary session first and bonus session second, then blocks third", async () => {
+    const goalId = await createGoal();
+
+    const first = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(first.status).toBe(200);
+    expect(first.body.sessionType).toBe("primary");
+
+    for (const task of first.body.tasks) {
+      await request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: task.id, status: "done" });
+    }
+
+    const second = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(second.status).toBe(200);
+    expect(second.body.sessionType).toBe("bonus");
+
+    for (const task of second.body.tasks) {
+      await request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: task.id, status: "done" });
+    }
+
+    const third = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(third.status).toBe(409);
+    expect(third.body.error).toBe("daily_limit_reached");
+    expect(third.body.sessionType).toBe("bonus");
+    expect(third.body.sessionStatus).toBe("completed");
+
+    const today = getLocalDateString();
+    const sessions = mockState.tables.task_sessions
+      .filter((session: any) => session.goal_id === goalId && session.session_date === today)
+      .sort((a: any, b: any) => a.created_at.localeCompare(b.created_at));
+
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0].session_type).toBe("primary");
+    expect(sessions[1].session_type).toBe("bonus");
+  });
+
+  it("applies lower target difficulty for bonus sessions", async () => {
+    const goalId = await createGoal();
+
+    const first = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(first.status).toBe(200);
+    expect(first.body.tasks.every((task: any) => task.difficulty === 2)).toBe(true);
+
+    for (const task of first.body.tasks) {
+      await request(app)
+        .post("/tasks/update")
+        .set("Authorization", authHeader())
+        .send({ task_id: task.id, status: "done" });
+    }
+
+    const step2 = mockState.tables.plan_steps.find((s: any) => s.step_index === 1);
+    if (step2) {
+      step2.difficulty = 1;
+    }
+
+    const second = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(second.status).toBe(200);
+    expect(second.body.sessionType).toBe("bonus");
+    expect(second.body.tasks.every((task: any) => task.difficulty === 1)).toBe(true);
   });
 
   it("should return feature disabled for improve plan endpoint", async () => {
@@ -638,6 +740,140 @@ describe("Flow tests", () => {
 
     const sessions = mockState.tables.task_sessions.filter((s: any) => s.goal_id === goalId);
     expect(sessions).toHaveLength(1);
+
+    const sessionId = sessions[0]?.id;
+    const sessionTasks = mockState.tables.tasks.filter((task: any) => task.session_id === sessionId);
+    const uniqueTaskIds = new Set(sessionTasks.map((task: any) => task.id));
+
+    expect(sessionTasks).toHaveLength(3);
+    expect(uniqueTaskIds.size).toBe(sessionTasks.length);
+    expect(generateTasksForStepMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mark locked active session as failed during fetch", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = getLocalDateString();
+
+    mockState.tables.task_sessions.push({
+      id: "locked-generating-session",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      session_type: "primary",
+      generation_locked: true,
+      status: "active",
+      created_at: new Date().toISOString(),
+    });
+
+    const fetchDuringGeneration = await request(app)
+      .get(`/tasks?goal_id=${goalId}`)
+      .set("Authorization", authHeader());
+
+    expect(fetchDuringGeneration.status).toBe(200);
+    expect(fetchDuringGeneration.body.type).toBe("ACTIVE_SESSION");
+    expect(fetchDuringGeneration.body.status).toBe("generation_in_progress");
+    expect(fetchDuringGeneration.body.sessionStatus).toBe("active");
+
+    const sessionDuring = mockState.tables.task_sessions.find((s: any) => s.id === "locked-generating-session");
+    expect(sessionDuring?.status).toBe("active");
+    expect(sessionDuring?.generation_locked).toBe(true);
+  });
+
+  it("handles concurrent generate and fetch without invalid state", async () => {
+    const goalId = await createGoal();
+
+    generateTasksForStepMock.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return [
+        { title: "Task A", description: "Do Task A", difficulty: 1 },
+        { title: "Task B", description: "Do Task B", difficulty: 2 },
+        { title: "Task C", description: "Do Task C", difficulty: 2 },
+      ];
+    });
+
+    const generatePromise = request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    for (let i = 0; i < 20; i += 1) {
+      const active = mockState.tables.task_sessions.find(
+        (session: any) => session.goal_id === goalId && session.status === "active"
+      );
+      if (active) break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const fetchResponse = await request(app)
+      .get(`/tasks?goal_id=${goalId}`)
+      .set("Authorization", authHeader());
+
+    expect(fetchResponse.status).toBe(200);
+    expect(["ACTIVE_SESSION", "NO_SESSION"]).toContain(fetchResponse.body.type);
+
+    const generateResponse = await generatePromise;
+    expect(generateResponse.status).toBe(200);
+
+    const failedSessions = mockState.tables.task_sessions.filter((session: any) => session.goal_id === goalId && session.status === "failed");
+    expect(failedSessions).toHaveLength(0);
+  });
+
+  it("returns failed session status without masking as active", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = getLocalDateString();
+
+    mockState.tables.task_sessions.push({
+      id: "failed-session-status-test",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      session_type: "primary",
+      generation_locked: false,
+      status: "failed",
+      created_at: new Date().toISOString(),
+    });
+
+    const response = await request(app)
+      .get(`/tasks?goal_id=${goalId}`)
+      .set("Authorization", authHeader());
+
+    expect(response.status).toBe(200);
+    expect(response.body.type).toBe("LATEST_SESSION");
+    expect(response.body.sessionStatus).toBe("failed");
+    expect(response.body.session.status).toBe("failed");
+  });
+
+  it("marks stale unlocked active session as failed", async () => {
+    const goalId = await createGoal();
+    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    const today = getLocalDateString();
+
+    mockState.tables.task_sessions.push({
+      id: "stale-active-session-test",
+      goal_id: goalId,
+      plan_id: step1.plan_id,
+      plan_step_id: step1.id,
+      session_date: today,
+      session_type: "primary",
+      generation_locked: false,
+      status: "active",
+      created_at: new Date(Date.now() - 120_000).toISOString(),
+    });
+
+    const response = await request(app)
+      .get(`/tasks?goal_id=${goalId}`)
+      .set("Authorization", authHeader());
+
+    expect(response.status).toBe(200);
+    expect(response.body.type).toBe("LATEST_SESSION");
+    expect(response.body.sessionStatus).toBe("failed");
+
+    const updated = mockState.tables.task_sessions.find((s: any) => s.id === "stale-active-session-test");
+    expect(updated?.status).toBe("failed");
   });
 
   it("rolls back goal creation when plan_steps insert fails", async () => {
@@ -733,7 +969,7 @@ describe("Flow tests", () => {
   it("does not attach new tasks to a completed conflict session", async () => {
     const goalId = await createGoal();
     const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
-    const today = new Date().toISOString().split("T")[0];
+    const today = getLocalDateString();
 
     mockState.tables.task_sessions.push({
       id: "completed-conflict-session",
@@ -741,6 +977,7 @@ describe("Flow tests", () => {
       plan_id: step1.plan_id,
       plan_step_id: step1.id,
       session_date: today,
+      session_type: "primary",
       status: "completed",
       created_at: new Date().toISOString(),
     });
@@ -766,16 +1003,15 @@ describe("Flow tests", () => {
       .send({ goal_id: goalId });
 
     expect(response.status).toBe(200);
-    expect(response.body.type).toBe("LATEST_SESSION");
-    expect(response.body.sessionStatus).toBe("completed");
-    expect(response.body.session.id).toBe("completed-conflict-session");
-    expect(mockState.tables.tasks.length).toBe(beforeCount);
+    expect(response.body.type).toBe("NEW_SESSION");
+    expect(response.body.sessionType).toBe("bonus");
+    expect(mockState.tables.tasks.length).toBeGreaterThan(beforeCount);
   });
 
   it("retry generate after completed conflict still does not reuse for insertion", async () => {
     const goalId = await createGoal();
     const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
-    const today = new Date().toISOString().split("T")[0];
+    const today = getLocalDateString();
 
     mockState.tables.task_sessions.push({
       id: "completed-conflict-session-2",
@@ -783,6 +1019,7 @@ describe("Flow tests", () => {
       plan_id: step1.plan_id,
       plan_step_id: step1.id,
       session_date: today,
+      session_type: "primary",
       status: "completed",
       created_at: new Date().toISOString(),
     });
@@ -801,8 +1038,9 @@ describe("Flow tests", () => {
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(first.body.type).toBe("LATEST_SESSION");
-    expect(second.body.type).toBe("LATEST_SESSION");
+    expect(first.body.type).toBe("NEW_SESSION");
+    expect(first.body.sessionType).toBe("bonus");
+    expect(second.body.type).toBe("ACTIVE_SESSION");
     expect(mockState.tables.tasks.length).toBe(beforeRetryCount);
   });
 

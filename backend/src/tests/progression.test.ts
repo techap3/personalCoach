@@ -196,8 +196,8 @@ vi.mock("../db/supabase", () => {
             const duplicate = table.find(
               (row) =>
                 row.goal_id === item.goal_id &&
-                row.plan_step_id === item.plan_step_id &&
-                row.session_date === item.session_date
+                row.session_date === item.session_date &&
+                (row.session_type || "primary") === (item.session_type || "primary")
             );
 
             if (duplicate) {
@@ -205,7 +205,7 @@ vi.mock("../db/supabase", () => {
                 data: null,
                 error: {
                   message:
-                    'duplicate key value violates unique constraint "task_sessions_goal_id_session_date_key"',
+                    'duplicate key value violates unique constraint "task_sessions_goal_session_date_type_key"',
                   code: "23505",
                 },
               };
@@ -216,6 +216,9 @@ vi.mock("../db/supabase", () => {
         const inserted = this.insertValues.map((item) => {
           const row: Row = { ...item };
           if (!row.id) row.id = nextId(this.table.slice(0, -1) || "row");
+          if (this.table === "task_sessions" && typeof row.generation_locked === "undefined") {
+            row.generation_locked = false;
+          }
           if (!row.created_at) row.created_at = new Date().toISOString();
           table.push(row);
           return clone(row);
@@ -289,7 +292,12 @@ const authHeader = () => {
   return `Bearer ${header}.${payload}.${signature}`;
 };
 
-const getToday = () => new Date().toISOString().split("T")[0];
+const getToday = () => {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    .toISOString()
+    .split("T")[0];
+};
 
 async function createGoal() {
   const response = await request(app)
@@ -368,7 +376,7 @@ describe("Progression regression tests", () => {
     expect(step2.status).toBe("active");
   });
 
-  it("TEST 2 — new session allowed same day", async () => {
+  it("TEST 2 — bonus session can start after primary completion on same day", async () => {
     const goalId = await createGoal();
 
     const first = await request(app)
@@ -392,6 +400,7 @@ describe("Progression regression tests", () => {
 
     expect(second.status).toBe(200);
     expect(second.body.type).toBe("NEW_SESSION");
+    expect(second.body.sessionType).toBe("bonus");
     expect(second.body.tasks).toHaveLength(3);
 
     const today = getToday();
@@ -401,9 +410,10 @@ describe("Progression regression tests", () => {
     );
 
     expect(step2Sessions.length).toBe(1);
+    expect(step2Sessions[0].session_type).toBe("bonus");
   });
 
-  it("TEST 3 — no duplicate session per step per day", async () => {
+  it("TEST 3 — no duplicate session tier for goal/day", async () => {
     const goalId = await createGoal();
 
     const first = await request(app)
@@ -420,12 +430,12 @@ describe("Progression regression tests", () => {
     expect(second.status).toBe(200);
 
     const today = getToday();
-    const step1 = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
-    const step1Sessions = mockState.tables.task_sessions.filter(
-      (s: any) => s.goal_id === goalId && s.plan_step_id === step1.id && s.session_date === today
+    const dailySessions = mockState.tables.task_sessions.filter(
+      (s: any) => s.goal_id === goalId && s.session_date === today
     );
 
-    expect(step1Sessions.length).toBe(1);
+    expect(dailySessions.length).toBe(1);
+    expect(dailySessions[0].session_type).toBe("primary");
   });
 
   it("TEST 4 — tasks not regenerated if session active", async () => {

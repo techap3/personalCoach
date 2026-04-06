@@ -196,8 +196,8 @@ vi.mock("../db/supabase", () => {
             const duplicate = table.find(
               (row) =>
                 row.goal_id === item.goal_id &&
-                row.plan_step_id === item.plan_step_id &&
-                row.session_date === item.session_date
+                row.session_date === item.session_date &&
+                (row.session_type || "primary") === (item.session_type || "primary")
             );
 
             if (duplicate) {
@@ -205,7 +205,7 @@ vi.mock("../db/supabase", () => {
                 data: null,
                 error: {
                   message:
-                    'duplicate key value violates unique constraint "task_sessions_goal_id_session_date_key"',
+                    'duplicate key value violates unique constraint "task_sessions_goal_session_date_type_key"',
                   code: "23505",
                 },
               };
@@ -216,6 +216,9 @@ vi.mock("../db/supabase", () => {
         const inserted = this.insertValues.map((item) => {
           const row: Row = { ...item };
           if (!row.id) row.id = nextId(this.table.slice(0, -1) || "row");
+          if (this.table === "task_sessions" && typeof row.generation_locked === "undefined") {
+            row.generation_locked = false;
+          }
           if (!row.created_at) row.created_at = new Date().toISOString();
           table.push(row);
           return clone(row);
