@@ -76,8 +76,6 @@ export default function TasksView({
     return resolvedTaskType.charAt(0).toUpperCase() + resolvedTaskType.slice(1);
   };
 
-  const isPendingTask = (task: Task) => task.status === "pending" || !task.status;
-
   const completedTasks = useMemo(
     () => visibleTasks.filter((task) => task.status === "done"),
     [visibleTasks]
@@ -152,9 +150,7 @@ export default function TasksView({
       <div className="space-y-3">
         {sortedTasks.map((task) => (
           (() => {
-            const isExpanded =
-              expandedTaskId === task.id ||
-              (expandedTaskId === null && isPendingTask(task));
+            const isExpanded = expandedTaskId === task.id;
 
             return (
               <div

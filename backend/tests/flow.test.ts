@@ -816,7 +816,7 @@ describe("Flow tests", () => {
 
     expect(response.status).toBe(200);
 
-    const sessionsById = new Map(
+    const sessionsById = new Map<string, any>(
       mockState.tables.task_sessions.map((session: any) => [session.id, session])
     );
 
