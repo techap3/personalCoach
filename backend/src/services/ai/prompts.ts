@@ -118,7 +118,7 @@ Return ONLY JSON:
     },
     {
       role: "user",
-      content: `Step: ${step.title}\nDescription: ${step.description}\nDifficulty: ${step.difficulty}/5\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
+      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
     },
   ];
 }

@@ -288,3 +288,11 @@ export function enforceTaskCount(
 
   return corrected.slice(0, MAX_TASKS);
 }
+
+export function enforceTargetDifficulty(input: GeneratedTask[], targetDifficulty: number): GeneratedTask[] {
+  const clampedTarget = Math.max(1, Math.min(5, Math.round(targetDifficulty)));
+  return input.map((task) => ({
+    ...task,
+    difficulty: clampedTarget,
+  }));
+}

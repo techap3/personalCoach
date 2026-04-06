@@ -4,6 +4,7 @@ import { getSupabaseClient } from "../db/supabase";
 import { generateTasksForStep } from "../services/ai/taskGenerator";
 import {
   enforceTaskCount,
+  enforceTargetDifficulty,
   getTaskTypeDistribution,
   MIN_TASKS,
   MAX_TASKS,
@@ -20,6 +21,7 @@ import {
   updateUserMemory,
   getUserMemory,
 } from "../services/memory/userMemory";
+import { getTargetDifficulty } from "../services/difficultyService";
 
 const router = Router();
 const RECENT_SESSION_LOOKBACK = 5;
@@ -216,8 +218,28 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     recentTaskTitles.map((title) => normalizeTaskTitle(title)).filter(Boolean)
   );
 
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const difficultyResult = await getTargetDifficulty(supabase, userId, goalId, {
+    lookbackSessions: RECENT_SESSION_LOOKBACK,
+    defaultDifficulty: 2,
+    currentDifficulty: activeStep.difficulty,
+  });
+
+  console.log("[tasks] Difficulty selection", {
+    goal_id: goalId,
+    completion_rate: difficultyResult.metrics.completion_rate,
+    skip_rate: difficultyResult.metrics.skip_rate,
+    chosen_difficulty: difficultyResult.targetDifficulty,
+    used_default: difficultyResult.usedDefault,
+  });
+
   const aiTasks = await generateTasksForStep(activeStep, {
     previousTasks: recentTaskTitles,
+    targetDifficulty: difficultyResult.targetDifficulty,
   });
 
   const rawTaskCount = Array.isArray(aiTasks) ? aiTasks.length : 0;
@@ -231,19 +253,23 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     stepTitle: activeStep.title,
     blockedNormalizedTitles: recentNormalizedTitles,
   });
+  const difficultyBalancedTasks = enforceTargetDifficulty(
+    generatedTasks,
+    difficultyResult.targetDifficulty
+  );
 
-  const typeDistribution = getTaskTypeDistribution(generatedTasks);
+  const typeDistribution = getTaskTypeDistribution(difficultyBalancedTasks);
 
-  if (generatedTasks.length < MIN_TASKS || generatedTasks.length > MAX_TASKS) {
+  if (difficultyBalancedTasks.length < MIN_TASKS || difficultyBalancedTasks.length > MAX_TASKS) {
     console.error("Task cap enforcement violation", {
       rawTaskCount,
-      finalTaskCount: generatedTasks.length,
+      finalTaskCount: difficultyBalancedTasks.length,
       goalId,
       stepId: activeStep.id,
     });
   }
 
-  const tasksToInsert = generatedTasks.map((t: any) => ({
+  const tasksToInsert = difficultyBalancedTasks.map((t: any) => ({
     goal_id: goalId,
     plan_step_id: activeStep.id,
     session_id: newSession.id,

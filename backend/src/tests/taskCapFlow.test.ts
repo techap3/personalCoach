@@ -654,4 +654,143 @@ describe("task cap flow regression", () => {
     expect(response.status).toBe(200);
     expect(response.body.tasks.some((task: any) => task.task_type === "reflect" || task.task_type === "review")).toBe(true);
   });
+
+  it("decreases target difficulty when recent skip rate is high", async () => {
+    const goalId = await createGoal();
+    const step = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    step.difficulty = 3;
+
+    mockState.tables.task_sessions.push(
+      {
+        id: "skip-session-1",
+        goal_id: goalId,
+        plan_id: step.plan_id,
+        plan_step_id: step.id,
+        session_date: "2026-04-01",
+        status: "completed",
+        created_at: new Date(Date.now() - 300_000).toISOString(),
+      },
+      {
+        id: "skip-session-2",
+        goal_id: goalId,
+        plan_id: step.plan_id,
+        plan_step_id: step.id,
+        session_date: "2026-04-02",
+        status: "completed",
+        created_at: new Date(Date.now() - 240_000).toISOString(),
+      },
+      {
+        id: "skip-session-3",
+        goal_id: goalId,
+        plan_id: step.plan_id,
+        plan_step_id: step.id,
+        session_date: "2026-04-03",
+        status: "completed",
+        created_at: new Date(Date.now() - 180_000).toISOString(),
+      }
+    );
+
+    mockState.tables.tasks.push(
+      { id: "skip-task-1", goal_id: goalId, plan_step_id: step.id, session_id: "skip-session-1", title: "A", description: "A", difficulty: 4, status: "skipped", created_at: new Date().toISOString() },
+      { id: "skip-task-2", goal_id: goalId, plan_step_id: step.id, session_id: "skip-session-1", title: "B", description: "B", difficulty: 4, status: "skipped", created_at: new Date().toISOString() },
+      { id: "skip-task-3", goal_id: goalId, plan_step_id: step.id, session_id: "skip-session-2", title: "C", description: "C", difficulty: 4, status: "skipped", created_at: new Date().toISOString() },
+      { id: "skip-task-4", goal_id: goalId, plan_step_id: step.id, session_id: "skip-session-2", title: "D", description: "D", difficulty: 4, status: "done", created_at: new Date().toISOString() },
+      { id: "skip-task-5", goal_id: goalId, plan_step_id: step.id, session_id: "skip-session-3", title: "E", description: "E", difficulty: 4, status: "skipped", created_at: new Date().toISOString() }
+    );
+
+    mockAiRaw(
+      JSON.stringify({
+        tasks: [
+          { title: "Hard Task 1", description: "A", difficulty: 5, task_type: "action" },
+          { title: "Hard Task 2", description: "B", difficulty: 5, task_type: "learn" },
+          { title: "Hard Task 3", description: "C", difficulty: 5, task_type: "reflect" },
+        ],
+      })
+    );
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks.every((task: any) => task.difficulty === 2)).toBe(true);
+  });
+
+  it("increases target difficulty when recent completion rate is high", async () => {
+    const goalId = await createGoal();
+    const step = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    step.difficulty = 3;
+
+    mockState.tables.task_sessions.push(
+      {
+        id: "done-session-1",
+        goal_id: goalId,
+        plan_id: step.plan_id,
+        plan_step_id: step.id,
+        session_date: "2026-04-01",
+        status: "completed",
+        created_at: new Date(Date.now() - 300_000).toISOString(),
+      },
+      {
+        id: "done-session-2",
+        goal_id: goalId,
+        plan_id: step.plan_id,
+        plan_step_id: step.id,
+        session_date: "2026-04-02",
+        status: "completed",
+        created_at: new Date(Date.now() - 240_000).toISOString(),
+      }
+    );
+
+    mockState.tables.tasks.push(
+      { id: "done-task-1", goal_id: goalId, plan_step_id: step.id, session_id: "done-session-1", title: "A", description: "A", difficulty: 2, status: "done", created_at: new Date().toISOString() },
+      { id: "done-task-2", goal_id: goalId, plan_step_id: step.id, session_id: "done-session-1", title: "B", description: "B", difficulty: 2, status: "done", created_at: new Date().toISOString() },
+      { id: "done-task-3", goal_id: goalId, plan_step_id: step.id, session_id: "done-session-2", title: "C", description: "C", difficulty: 2, status: "done", created_at: new Date().toISOString() },
+      { id: "done-task-4", goal_id: goalId, plan_step_id: step.id, session_id: "done-session-2", title: "D", description: "D", difficulty: 2, status: "done", created_at: new Date().toISOString() },
+      { id: "done-task-5", goal_id: goalId, plan_step_id: step.id, session_id: "done-session-2", title: "E", description: "E", difficulty: 2, status: "done", created_at: new Date().toISOString() }
+    );
+
+    mockAiRaw(
+      JSON.stringify({
+        tasks: [
+          { title: "Task 1", description: "A", difficulty: 1, task_type: "action" },
+          { title: "Task 2", description: "B", difficulty: 1, task_type: "learn" },
+          { title: "Task 3", description: "C", difficulty: 1, task_type: "review" },
+        ],
+      })
+    );
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks.every((task: any) => task.difficulty === 4)).toBe(true);
+  });
+
+  it("uses default difficulty when no history exists", async () => {
+    const goalId = await createGoal();
+    const step = mockState.tables.plan_steps.find((s: any) => s.step_index === 0);
+    step.difficulty = 5;
+
+    mockAiRaw(
+      JSON.stringify({
+        tasks: [
+          { title: "Task 1", description: "A", difficulty: 5, task_type: "action" },
+          { title: "Task 2", description: "B", difficulty: 5, task_type: "learn" },
+          { title: "Task 3", description: "C", difficulty: 5, task_type: "reflect" },
+        ],
+      })
+    );
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks.every((task: any) => task.difficulty === 2)).toBe(true);
+  });
 });
