@@ -1,5 +1,9 @@
 node_modules
+.pnpm-store
 .env
+frontend/test-results
+e2e/test-results
+playwright-report
 .next
 dist
 *.log
