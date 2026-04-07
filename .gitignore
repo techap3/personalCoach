@@ -9,3 +9,4 @@ dist
 *.log
 .vscode/settings.json
 .gitignore
+.vercel
