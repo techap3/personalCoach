@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@repo/constants": "workspace:*",
     "@supabase/supabase-js": "^2.100.0",
     "jsonwebtoken": "^9.0.3",
     "next": "16.2.1",
