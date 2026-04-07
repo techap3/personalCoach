@@ -1303,7 +1303,11 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
           .order("created_at", { ascending: false });
 
         const existingSession =
-          (conflictSessions || []).find((session: any) => session.status === "active") ||
+          (conflictSessions || []).find(
+            (session: any) =>
+              session.session_type === sessionTypeForNewSession &&
+              session.status === "active"
+          ) ||
           conflictSessions?.[0] ||
           null;
 

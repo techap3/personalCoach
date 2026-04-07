@@ -6,6 +6,7 @@ create or replace function public.update_task_if_session_not_completed(
 )
 returns setof public.tasks
 language sql
+security invoker
 set search_path = public
 as $$
   update public.tasks t
@@ -17,5 +18,6 @@ as $$
   where t.id::text = p_task_id
     and t.session_id = s.id
     and s.status <> 'completed'
+    and s.user_id = auth.uid()
   returning t.*;
 $$;
