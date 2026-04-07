@@ -1,4 +1,4 @@
-import type { TaskStatus as SharedTaskStatus } from "@repo/types";
+import type { TaskStatus as SharedTaskStatus } from "../../../../packages/types";
 
 const DEFAULT_DIFFICULTY = 2;
 const MIN_DIFFICULTY = 1;

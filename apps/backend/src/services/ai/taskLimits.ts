@@ -1,5 +1,5 @@
 import { normalizeTaskTitle } from "../utils/normalization";
-import type { TaskType } from "@repo/types";
+import type { TaskType } from "../../../../../packages/types";
 
 export const MIN_TASKS = 3;
 export const MAX_TASKS = 5;

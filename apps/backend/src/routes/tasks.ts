@@ -23,7 +23,7 @@ import {
 } from "../services/memory/userMemory";
 import { getTargetDifficulty } from "../services/difficultyService";
 import { generateSessionSummary } from "../services/sessionSummary";
-import type { SessionType } from "@repo/types";
+import type { SessionType } from "../../../../packages/types";
 import logger from "../logger";
 
 const router = Router();
