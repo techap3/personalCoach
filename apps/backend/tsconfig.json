@@ -2,12 +2,15 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "commonjs",
+
     "rootDir": "../..",
     "outDir": "./dist",
+
     "esModuleInterop": true,
     "skipLibCheck": true,
     "strict": false,
     "ignoreDeprecations": "6.0",
+
     "baseUrl": ".",
     "paths": {
       "@repo/types": ["../../packages/types"],
