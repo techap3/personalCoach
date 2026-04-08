@@ -150,9 +150,10 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
   ```typescript
   const getLocalDateString = () => {
     const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), now.getDate())
-      .toISOString()
-      .split("T")[0];
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   };
   ```
 - This pattern is used in `apps/backend/src/routes/tasks.ts` and `apps/backend/src/routes/adapt.ts`.
