@@ -142,7 +142,7 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 - Supabase queries return `{ data, error }` and do **not** throw by default.
 - The codebase typically checks `error` explicitly: `if (error) return res.status(500).json(error)` or `if (error) throw error`.
 - Do **not** wrap Supabase calls in `try/catch` expecting them to throw — check the `error` property instead.
-- When you need `.maybeSingle()`, use it (returns `null` if no row) rather than `.single()` (throws on zero rows).
+- When zero rows is an acceptable result, prefer `.maybeSingle()` because it returns `data: null` and `error: null` when no row is found. Use `.single()` only when exactly one row is required, since it returns a non-null `error` when 0 or more than 1 rows are returned.
 
 ### Date Handling — CRITICAL
 - **Never** use `new Date().toISOString().split('T')[0]` for local date strings. This returns UTC date, which is wrong for users in positive-offset timezones.
