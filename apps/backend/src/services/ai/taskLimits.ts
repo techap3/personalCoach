@@ -352,15 +352,30 @@ function getTopSkippedCategories(skipPattern: Record<string, number>, limit = 2)
     .map(([category]) => category);
 }
 
+function isKnownTaskType(value: string): value is TaskType {
+  return TASK_TYPES.includes(value as TaskType);
+}
+
 function pickReplacementType(excluded: Set<string>, fallback: TaskType) {
   const candidates: TaskType[] = ["action", "learn", "reflect", "review"];
   const safe = candidates.find((candidate) => !excluded.has(candidate));
   return safe ?? fallback;
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function replaceCategoryWithFallback(text: string, category: string, fallback: string) {
-  const matcher = new RegExp(`\\b${category}\\b`, "gi");
+  const escaped = escapeRegExp(category);
+  const matcher = new RegExp(`\\b${escaped}\\b`, "gi");
   return text.replace(matcher, fallback);
+}
+
+function safeTextMatch(task: GeneratedTask, category: string) {
+  const escaped = escapeRegExp(category.toLowerCase());
+  const matcher = new RegExp(`\\b${escaped}\\b`, "i");
+  return matcher.test(`${task.title} ${task.description}`.toLowerCase());
 }
 
 function applySkipFallbackText(task: GeneratedTask, skipPattern: Record<string, number>) {
@@ -520,13 +535,8 @@ export function enforceBehavioralPreferences(
 ) {
   if (!input.length) return [];
   const skipPattern = options?.skipPattern || {};
-  const highSkippedCategories = new Set(getTopSkippedCategories(skipPattern, 2));
 
-  return input.map((task, index) => {
-    const fallbackType = options?.originalTasks?.[index]?.task_type || task.task_type;
-    const nextType = highSkippedCategories.has(task.task_type)
-      ? pickReplacementType(highSkippedCategories, fallbackType)
-      : task.task_type;
+  return input.map((task) => {
 
     const withSkipFallback = applySkipFallbackText(task, skipPattern);
     const effortScaled = applyEffortScaling(
@@ -543,7 +553,8 @@ export function enforceBehavioralPreferences(
 
     return {
       ...effortScaled,
-      task_type: nextType,
+      // Preserve semantic task type; only adapt wording/effort.
+      task_type: task.task_type,
       // Keep route-calibrated difficulty (bonus/high-performance logic) intact.
       difficulty: effortScaled.difficulty,
     };
@@ -578,8 +589,11 @@ export function validateBehavioralPreferences(
 
   return highSkippedCategories.every((category) => {
     const hasCategory = (task: GeneratedTask) => {
-      const haystack = `${task.title} ${task.description}`.toLowerCase();
-      return haystack.includes(category.toLowerCase());
+      if (isKnownTaskType(category)) {
+        return task.task_type === category;
+      }
+
+      return safeTextMatch(task, category);
     };
 
     const originalCount = originalTasks.filter(hasCategory).length;

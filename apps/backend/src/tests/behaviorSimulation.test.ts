@@ -34,24 +34,34 @@ const state: InMemoryState = {
   user_preferences: [],
 };
 
+function shouldLogSimulation() {
+  return process.env.SIMULATION_MODE === "true";
+}
+
+function simulationLog(message: string) {
+  if (shouldLogSimulation()) {
+    console.log(message);
+  }
+}
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
 }
 
 function formatTasks(label: string, tasks: GeneratedTask[]) {
-  console.log(`${label}:`);
+  simulationLog(`${label}:`);
   for (const task of tasks) {
-    console.log(`- [${task.task_type}] [d${task.difficulty}] ${task.title} :: ${task.description}`);
+    simulationLog(`- [${task.task_type}] [d${task.difficulty}] ${task.title} :: ${task.description}`);
   }
 }
 
 function formatMemory(memory: any) {
   const skipPattern = memory?.skip_pattern || {};
-  console.log("Memory State:");
-  console.log(`- completion rate: ${Number(memory?.avg_completion_rate ?? 0).toFixed(2)}`);
-  console.log(`- preferred difficulty: ${memory?.preferred_difficulty ?? "n/a"}`);
-  console.log(`- consistency score: ${Number(memory?.consistency_score ?? 0).toFixed(2)}`);
-  console.log(`- skip pattern: ${JSON.stringify(skipPattern)}`);
+  simulationLog("Memory State:");
+  simulationLog(`- completion rate: ${Number(memory?.avg_completion_rate ?? 0).toFixed(2)}`);
+  simulationLog(`- preferred difficulty: ${memory?.preferred_difficulty ?? "n/a"}`);
+  simulationLog(`- consistency score: ${Number(memory?.consistency_score ?? 0).toFixed(2)}`);
+  simulationLog(`- skip pattern: ${JSON.stringify(skipPattern)}`);
 }
 
 function formatDifficultyComparison(before: GeneratedTask[], after: GeneratedTask[]) {
@@ -62,10 +72,10 @@ function formatDifficultyComparison(before: GeneratedTask[], after: GeneratedTas
     ? after.reduce((sum, task) => sum + task.difficulty, 0) / after.length
     : 0;
 
-  console.log(`Difficulty Before: ${beforeAvg.toFixed(2)}`);
-  console.log(`Difficulty After: ${afterAvg.toFixed(2)}`);
-  console.log(`Difficulty Vector Before: [${before.map((task) => task.difficulty).join(", ")}]`);
-  console.log(`Difficulty Vector After: [${after.map((task) => task.difficulty).join(", ")}]`);
+  simulationLog(`Difficulty Before: ${beforeAvg.toFixed(2)}`);
+  simulationLog(`Difficulty After: ${afterAvg.toFixed(2)}`);
+  simulationLog(`Difficulty Vector Before: [${before.map((task) => task.difficulty).join(", ")}]`);
+  simulationLog(`Difficulty Vector After: [${after.map((task) => task.difficulty).join(", ")}]`);
 }
 
 function buildScenarioPipeline(
@@ -244,7 +254,7 @@ describe("behavior-driven adaptation simulation", () => {
 
     const result = buildScenarioPipeline(baseTasks, memory, state.tasks.map((t) => ({ status: t.status })) as any);
 
-    console.log("\n=== SKIP PATTERN TEST ===");
+    simulationLog("\n=== SKIP PATTERN TEST ===");
     formatMemory(memory);
     formatTasks("Before Adaptation", result.beforeAdaptation);
     formatTasks("After Adaptation", result.finalTasks);
@@ -275,9 +285,9 @@ describe("behavior-driven adaptation simulation", () => {
 
     const result = buildScenarioPipeline(baseTasks, memory, state.tasks.map((t) => ({ status: t.status })) as any);
 
-    console.log("\n=== HIGH COMPLETION TEST ===");
+    simulationLog("\n=== HIGH COMPLETION TEST ===");
     formatMemory(memory);
-    console.log(`Completion Rate: ${result.metrics.completion_rate.toFixed(2)}`);
+    simulationLog(`Completion Rate: ${result.metrics.completion_rate.toFixed(2)}`);
     formatTasks("Before Adaptation", result.beforeAdaptation);
     formatTasks("After Adaptation", result.finalTasks);
     formatDifficultyComparison(result.beforeAdaptation, result.finalTasks);
@@ -305,9 +315,9 @@ describe("behavior-driven adaptation simulation", () => {
 
     const result = buildScenarioPipeline(baseTasks, memory, state.tasks.map((t) => ({ status: t.status })) as any);
 
-    console.log("\n=== LOW COMPLETION TEST ===");
+    simulationLog("\n=== LOW COMPLETION TEST ===");
     formatMemory(memory);
-    console.log(`Completion Rate: ${result.metrics.completion_rate.toFixed(2)}`);
+    simulationLog(`Completion Rate: ${result.metrics.completion_rate.toFixed(2)}`);
     formatTasks("Before Adaptation", result.beforeAdaptation);
     formatTasks("After Adaptation", result.finalTasks);
     formatDifficultyComparison(result.beforeAdaptation, result.finalTasks);
@@ -343,7 +353,7 @@ describe("behavior-driven adaptation simulation", () => {
 
     const result = buildScenarioPipeline(day4Base, memory, state.tasks.map((t) => ({ status: t.status })) as any);
 
-    console.log("\n=== MIXED BEHAVIOR TEST ===");
+    simulationLog("\n=== MIXED BEHAVIOR TEST ===");
     formatMemory(memory);
     formatTasks("Before Adaptation", result.beforeAdaptation);
     formatTasks("After Adaptation", result.finalTasks);

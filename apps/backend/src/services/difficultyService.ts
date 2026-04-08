@@ -123,6 +123,7 @@ export async function getTargetDifficulty(
     lookbackSessions?: number;
     defaultDifficulty?: number;
     currentDifficulty?: number;
+    preferredDifficulty?: number;
   }
 ) {
   const lookbackSessions = options?.lookbackSessions ?? DEFAULT_LOOKBACK;
@@ -134,28 +135,32 @@ export async function getTargetDifficulty(
       : clampDifficulty(options.currentDifficulty);
 
   let preferenceRow: { preferred_difficulty?: number | null } | null = null;
-  try {
-    const preferenceQuery = await supabase
-      .from("user_preferences")
-      .select("preferred_difficulty")
-      .eq("user_id", userId)
-      .maybeSingle();
+  if (typeof options?.preferredDifficulty === "number" && Number.isFinite(options.preferredDifficulty)) {
+    preferenceRow = { preferred_difficulty: options.preferredDifficulty };
+  } else {
+    try {
+      const preferenceQuery = await supabase
+        .from("user_preferences")
+        .select("preferred_difficulty")
+        .eq("user_id", userId)
+        .maybeSingle();
 
-    if (preferenceQuery?.error) {
+      if (preferenceQuery?.error) {
+        console.warn("[difficulty] Failed to read user preference, falling back", {
+          user_id: userId,
+          error: preferenceQuery.error.message,
+        });
+      } else {
+        preferenceRow = (preferenceQuery?.data ?? null) as {
+          preferred_difficulty?: number | null;
+        } | null;
+      }
+    } catch (error: any) {
       console.warn("[difficulty] Failed to read user preference, falling back", {
         user_id: userId,
-        error: preferenceQuery.error.message,
+        error: error?.message,
       });
-    } else {
-      preferenceRow = (preferenceQuery?.data ?? null) as {
-        preferred_difficulty?: number | null;
-      } | null;
     }
-  } catch (error: any) {
-    console.warn("[difficulty] Failed to read user preference, falling back", {
-      user_id: userId,
-      error: error?.message,
-    });
   }
 
   const { data: goal } = await supabase
@@ -234,8 +239,14 @@ export async function getTargetDifficulty(
     };
   }
 
-  const previousPreference = Number(preferenceRow?.preferred_difficulty);
-  const hasStoredPreference = Number.isFinite(previousPreference);
+  const rawPreference = preferenceRow?.preferred_difficulty;
+  const hasStoredPreference =
+    typeof rawPreference === "number" &&
+    Number.isFinite(rawPreference);
+
+  const previousPreference = hasStoredPreference
+    ? rawPreference
+    : null;
 
   const basePreference = hasStoredPreference
     ? clampPreferenceDifficulty(previousPreference)
