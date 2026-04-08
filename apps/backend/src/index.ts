@@ -36,6 +36,12 @@ app.get("/health", (_, res) => {
 app.use("/goals", goalRoutes);
 app.use("/test", testRoutes);
 app.use("/tasks", taskRoutes);
+app.use("/daily-summary", (req, res, next) => {
+  const queryIndex = req.originalUrl.indexOf("?");
+  const queryString = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
+  req.url = `/daily-summary${queryString}`;
+  return (taskRoutes as any)(req, res, next);
+});
 app.use("/adapt", adaptRoutes);
 
 const PORT = process.env.PORT || 3001;

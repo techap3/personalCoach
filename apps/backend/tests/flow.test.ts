@@ -104,6 +104,9 @@ vi.mock("../src/db/supabase", () => {
     failPlanStepsInsert: false,
     forceGenerationLockContention: false,
     forceTaskSessionInsertConflictOnce: false,
+    failUserPreferencesReadOnce: false,
+    failUserPreferencesUpsertOnce: false,
+    failTasksReadOnce: false,
     tables: {
       goals: [] as Row[],
       plans: [] as Row[],
@@ -123,6 +126,9 @@ vi.mock("../src/db/supabase", () => {
     state.failPlanStepsInsert = false;
     state.forceGenerationLockContention = false;
     state.forceTaskSessionInsertConflictOnce = false;
+    state.failUserPreferencesReadOnce = false;
+    state.failUserPreferencesUpsertOnce = false;
+    state.failTasksReadOnce = false;
     state.tables.goals = [];
     state.tables.plans = [];
     state.tables.plan_steps = [];
@@ -132,7 +138,7 @@ vi.mock("../src/db/supabase", () => {
   };
 
   class QueryBuilder {
-    private action: "select" | "insert" | "update" = "select";
+    private action: "select" | "insert" | "update" | "upsert" = "select";
     private filters: Array<{ op: string; field: string; value: any }> = [];
     private orderField: string | null = null;
     private ascending = true;
@@ -154,6 +160,12 @@ vi.mock("../src/db/supabase", () => {
 
     insert(values: Row | Row[]) {
       this.action = "insert";
+      this.insertValues = Array.isArray(values) ? values : [values];
+      return this;
+    }
+
+    upsert(values: Row | Row[], _options?: { onConflict?: string }) {
+      this.action = "upsert";
       this.insertValues = Array.isArray(values) ? values : [values];
       return this;
     }
@@ -264,7 +276,7 @@ vi.mock("../src/db/supabase", () => {
     private async execute() {
       const table = state.tables[this.table];
 
-      if (this.action === "insert") {
+      if (this.action === "insert" || this.action === "upsert") {
         if (this.table === "plan_steps" && state.failPlanStepsInsert) {
           return {
             data: null,
@@ -304,6 +316,39 @@ vi.mock("../src/db/supabase", () => {
               };
             }
           }
+        }
+
+        if (
+          this.table === "user_preferences" &&
+          this.action === "upsert" &&
+          state.failUserPreferencesUpsertOnce
+        ) {
+          state.failUserPreferencesUpsertOnce = false;
+          return {
+            data: null,
+            error: { message: "simulated user_preferences upsert failure" },
+          };
+        }
+
+        if (this.table === "user_preferences" && this.action === "upsert") {
+          const upserted = this.insertValues.map((item) => {
+            const existing = table.find((row) => row.user_id === item.user_id);
+            if (existing) {
+              Object.assign(existing, item);
+              return clone(existing);
+            }
+
+            const row: Row = { ...item };
+            if (!row.id) row.id = nextId(this.table.slice(0, -1) || "row");
+            if (!row.created_at) row.created_at = new Date().toISOString();
+            table.push(row);
+            return clone(row);
+          });
+
+          return {
+            data: this.returnMutatedRows ? upserted : null,
+            error: null,
+          };
         }
 
         const inserted = this.insertValues.map((item) => {
@@ -357,6 +402,22 @@ vi.mock("../src/db/supabase", () => {
         return {
           data: this.returnMutatedRows ? updated : null,
           error: null,
+        };
+      }
+
+      if (this.table === "user_preferences" && state.failUserPreferencesReadOnce) {
+        state.failUserPreferencesReadOnce = false;
+        return {
+          data: null,
+          error: { message: "simulated user_preferences read failure" },
+        };
+      }
+
+      if (this.table === "tasks" && state.failTasksReadOnce) {
+        state.failTasksReadOnce = false;
+        return {
+          data: null,
+          error: { message: "simulated tasks read failure" },
         };
       }
 
@@ -432,9 +493,10 @@ const authHeader = () => {
 
 const getLocalDateString = () => {
   const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    .toISOString()
-    .split("T")[0];
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 };
 
 async function createGoal() {
@@ -1426,7 +1488,7 @@ describe("Flow tests", () => {
       (row: any) => row.user_id === "user-1"
     );
 
-    console.log("\n=== DUPLICATE REQUEST SCENARIO ===");
+    console.log("\n=== DUPLICATE REQUEST ===");
     console.log("first response:", {
       status: first.status,
       streak: first.body.streak,
@@ -1473,6 +1535,8 @@ describe("Flow tests", () => {
       .set("Authorization", authHeader())
       .send({ goal_id: goalId });
 
+    mockState.failTasksReadOnce = true;
+
     const response = await request(app)
       .post("/tasks/update")
       .set("Authorization", authHeader())
@@ -1482,12 +1546,13 @@ describe("Flow tests", () => {
       (row: any) => row.user_id === "user-1"
     );
 
-    console.log("\n=== DB FAILURE SCENARIO ===");
+    console.log("\n=== DB FAILURE ===");
     console.log("response:", {
       status: response.status,
       completed_today: response.body.completed_today,
       total_today: response.body.total_today,
       streak: response.body.streak,
+      degraded: response.body.degraded,
       feedback_message: response.body.feedback_message,
     });
     console.log("persisted preference after failure:", {
@@ -1498,9 +1563,81 @@ describe("Flow tests", () => {
     expect(response.status).toBe(200);
     expect(response.body.completed_today).toBeNull();
     expect(response.body.total_today).toBeNull();
-    expect(response.body.streak).toBe(3);
+    expect(response.body.streak).toBeNull();
+    expect(response.body.degraded).toBe(true);
     expect(persistedPreference?.current_streak).toBe(3);
     expect(persistedPreference?.last_completed_date).toBe(getLocalDateString());
+  });
+
+  it("user_preferences read failure returns degraded response", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    mockState.failUserPreferencesReadOnce = true;
+
+    const response = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "done" });
+
+    console.log("\n=== DB FAILURE ===");
+    console.log("response:", response.body);
+
+    expect(response.status).toBe(200);
+    expect(response.body.degraded).toBe(true);
+    expect(response.body.streak).toBeNull();
+    expect(response.body.completed_today).toBeNull();
+    expect(response.body.total_today).toBeNull();
+  });
+
+  it("streak write failure returns degraded response and does not persist increment", async () => {
+    const goalId = await createGoal();
+
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = new Date(
+      yesterday.getFullYear(),
+      yesterday.getMonth(),
+      yesterday.getDate()
+    )
+      .toISOString()
+      .split("T")[0];
+
+    mockState.tables.user_preferences.push({
+      user_id: "user-1",
+      current_streak: 3,
+      last_completed_date: yesterdayStr,
+      updated_at: new Date().toISOString(),
+    });
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    mockState.failUserPreferencesUpsertOnce = true;
+
+    const response = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "done" });
+
+    const persistedPreference = mockState.tables.user_preferences.find(
+      (row: any) => row.user_id === "user-1"
+    );
+
+    console.log("\n=== STREAK WRITE FAILURE ===");
+    console.log("response:", response.body);
+
+    expect(response.status).toBe(200);
+    expect(response.body.degraded).toBe(true);
+    expect(response.body.streak).toBeNull();
+    expect(persistedPreference?.current_streak).toBe(3);
+    expect(persistedPreference?.last_completed_date).toBe(yesterdayStr);
   });
 
   it("response keeps message as session summary and feedback_message as feedback text", async () => {
@@ -1547,5 +1684,191 @@ describe("Flow tests", () => {
     expect(finalUpdate.body.summary_message).toBeUndefined();
     expect(typeof finalUpdate.body.feedback_message).toBe("string");
     expect(finalUpdate.body.feedback_message.length).toBeGreaterThan(0);
+  });
+
+  it("daily-summary returns yesterday summary and auto-generates today's tasks", async () => {
+    await createGoal();
+
+    const response = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+
+    expect(response.status).toBe(200);
+    expect(typeof response.body.greeting).toBe("string");
+    expect(response.body.yesterday).toEqual({
+      completed: 0,
+      total: 0,
+      streak: 0,
+    });
+    expect(Array.isArray(response.body.today.tasks)).toBe(true);
+    expect(response.body.today.tasks.length).toBeGreaterThan(0);
+  });
+
+  it("daily-summary is idempotent and does not duplicate today's tasks", async () => {
+    await createGoal();
+
+    const first = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+
+    const countAfterFirst = mockState.tables.tasks.length;
+
+    const second = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(mockState.tables.tasks.length).toBe(countAfterFirst);
+    expect(second.body.today.tasks.length).toBe(first.body.today.tasks.length);
+  });
+
+  it("daily-summary maps time_available to desiredCount in generation pipeline", async () => {
+    await createGoal();
+
+    const response = await request(app)
+      .get("/daily-summary?time_available=high")
+      .set("Authorization", authHeader());
+
+    expect(response.status).toBe(200);
+    const lastCall = generateTasksForStepMock.mock.calls.at(-1);
+    expect(lastCall?.[1]?.desiredCount).toBe(5);
+  });
+
+  it("daily-summary applies low/medium/high task counts", async () => {
+    resetMockDb();
+    await createGoal();
+    const low = await request(app)
+      .get("/daily-summary?time_available=low")
+      .set("Authorization", authHeader());
+
+    resetMockDb();
+    await createGoal();
+    const medium = await request(app)
+      .get("/daily-summary?time_available=medium")
+      .set("Authorization", authHeader());
+
+    resetMockDb();
+    await createGoal();
+    const high = await request(app)
+      .get("/daily-summary?time_available=high")
+      .set("Authorization", authHeader());
+
+    expect(low.status).toBe(200);
+    expect(medium.status).toBe(200);
+    expect(high.status).toBe(200);
+    expect(low.body.today.tasks.length).toBe(2);
+    expect(medium.body.today.tasks.length).toBe(3);
+    expect(high.body.today.tasks.length).toBe(5);
+  });
+
+  it("daily-summary greeting reflects streak tiers", async () => {
+    await createGoal();
+
+    mockState.tables.user_preferences.push({
+      user_id: "user-1",
+      current_streak: 1,
+      updated_at: new Date().toISOString(),
+    });
+    const streak1 = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+    expect(streak1.status).toBe(200);
+    expect(streak1.body.greeting).toBe("Nice start");
+
+    resetMockDb();
+    await createGoal();
+    mockState.tables.user_preferences.push({
+      user_id: "user-1",
+      current_streak: 2,
+      updated_at: new Date().toISOString(),
+    });
+    const streak2 = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+    expect(streak2.status).toBe(200);
+    expect(streak2.body.greeting).toBe("Good to see you again");
+
+    resetMockDb();
+    await createGoal();
+    mockState.tables.user_preferences.push({
+      user_id: "user-1",
+      current_streak: 5,
+      updated_at: new Date().toISOString(),
+    });
+    const streak5 = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+    expect(streak5.status).toBe(200);
+    expect(streak5.body.greeting).toBe("You're on fire 🔥");
+  });
+
+  it("daily-summary simulation prints responses", async () => {
+    await createGoal();
+
+    const first = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+
+    const second = await request(app)
+      .get("/daily-summary")
+      .set("Authorization", authHeader());
+
+    console.log("\n=== DAILY SUMMARY ===");
+    console.log("fresh response:", first.body);
+    console.log("second response:", second.body);
+
+    resetMockDb();
+    await createGoal();
+
+    const low = await request(app)
+      .get("/daily-summary?time_available=low")
+      .set("Authorization", authHeader());
+
+    console.log("low response:", low.body);
+
+    resetMockDb();
+    await createGoal();
+
+    const high = await request(app)
+      .get("/daily-summary?time_available=high")
+      .set("Authorization", authHeader());
+
+    console.log("high response:", high.body);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.today.tasks.length).toBe(first.body.today.tasks.length);
+    expect(low.status).toBe(200);
+    expect(high.status).toBe(200);
+    expect(low.body.today.tasks.length).toBe(2);
+    expect(high.body.today.tasks.length).toBe(5);
+  });
+
+  it("task invariant check prints count/type/difficulty", async () => {
+    await createGoal();
+
+    const response = await request(app)
+      .get("/daily-summary?time_available=high")
+      .set("Authorization", authHeader());
+
+    const tasks = response.body.today.tasks;
+    const types = tasks.map((task: any) => task.task_type);
+    const hasAction = types.includes("action");
+    const hasReflective = types.includes("reflect") || types.includes("review");
+
+    console.log("\n=== TASK VALIDATION ===");
+    console.log(
+      tasks.map((task: any) => ({
+        title: task.title,
+        task_type: task.task_type,
+        difficulty: task.difficulty,
+      }))
+    );
+
+    expect(response.status).toBe(200);
+    expect(tasks).toHaveLength(5);
+    expect(hasAction).toBe(true);
+    expect(hasReflective).toBe(true);
   });
 });
