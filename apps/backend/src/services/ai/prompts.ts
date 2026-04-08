@@ -1,6 +1,72 @@
 import { ChatCompletionMessageParam } from "openai/resources/chat";
 import { PlanResponse } from "./parser";
 
+function getTopSkipCategories(memory: any, limit = 2) {
+  const pattern = (memory?.skip_pattern || {}) as Record<string, number>;
+  return Object.entries(pattern)
+    .filter(([category, count]) => category !== "general" && Number(count) > 0)
+    .sort((left, right) => Number(right[1]) - Number(left[1]))
+    .slice(0, limit)
+    .map(([category]) => category);
+}
+
+function getConsistencyLabel(score: unknown) {
+  if (score === null || score === undefined) return "medium";
+  const value = Number(score);
+  if (!Number.isFinite(value)) return "medium";
+  if (value < 0.34) return "low";
+  if (value < 0.67) return "medium";
+  return "high";
+}
+
+function hasFiniteMemorySignal(memory: any, field: string) {
+  if (!memory || typeof memory !== "object") return false;
+  const value = memory[field];
+  return value !== null && value !== undefined && Number.isFinite(Number(value));
+}
+
+export function buildTendencySummary(memory: any) {
+  if (!memory || typeof memory !== "object") {
+    return "";
+  }
+
+  const hasCompletionRate = hasFiniteMemorySignal(memory, "avg_completion_rate");
+  const hasPreferredDifficulty = hasFiniteMemorySignal(memory, "preferred_difficulty");
+  const hasConsistency = hasFiniteMemorySignal(memory, "consistency_score");
+  const topSkipCategories = getTopSkipCategories(memory, 2);
+  const hasSkipSignal = topSkipCategories.length > 0;
+
+  if (!hasCompletionRate && !hasPreferredDifficulty && !hasConsistency && !hasSkipSignal) {
+    return "";
+  }
+
+  const lines: string[] = [];
+  if (hasCompletionRate) {
+    const completionRate = Number(memory.avg_completion_rate);
+    lines.push(`- Avg completion rate: ${(completionRate * 100).toFixed(0)}%`);
+  }
+
+  if (hasPreferredDifficulty) {
+    const preferredDifficulty = Number(memory.preferred_difficulty);
+    lines.push(`- Preferred difficulty (1=easy, 2=medium, 3=hard): ${preferredDifficulty}`);
+  }
+
+  if (hasSkipSignal) {
+    lines.push(`- High skip categories: ${topSkipCategories.join(", ")}`);
+  }
+
+  if (hasConsistency) {
+    const consistency = getConsistencyLabel(memory.consistency_score);
+    lines.push(`- Consistency: ${consistency}`);
+  }
+
+  if (!lines.length) {
+    return "";
+  }
+
+  return lines.join("\n");
+}
+
 export function buildPlanPrompt(goal: string): ChatCompletionMessageParam[] {
   return [
     {
@@ -76,10 +142,15 @@ export function buildStepTaskPrompt(step: {
   title: string;
   description: string;
   difficulty: number;
-}, previousTasks: string[] = []): ChatCompletionMessageParam[] {
+}, previousTasks: string[] = [], memory?: any): ChatCompletionMessageParam[] {
   const priorTasksContext = previousTasks.length
     ? previousTasks.map((task) => `- ${task}`).join("\n")
     : "- none";
+
+  const tendencySummary = buildTendencySummary(memory);
+  const tendencyBlock = tendencySummary
+    ? `\n\nUser tendencies:\n${tendencySummary}`
+    : "";
 
   return [
     {
@@ -118,7 +189,7 @@ Return ONLY JSON:
     },
     {
       role: "user",
-      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
+      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)${tendencyBlock}\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
     },
   ];
 }
@@ -204,6 +275,11 @@ export function buildTaskAdaptationPrompt({
   history,
   memory,
 }: any) {
+  const tendencySummary = buildTendencySummary(memory);
+  const tendencyBlock = tendencySummary
+    ? `User tendencies:\n${tendencySummary}\n\n`
+    : "";
+
   return [
     {
       role: "system" as const,
@@ -222,8 +298,8 @@ Adapt today's tasks to maximize chances of completion while keeping them meaning
 
 TASK RULES:
 - Return EXACTLY the same number of tasks as input
-- Max 3 tasks
 - Tasks must be specific, actionable, and time-bound
+- Avoid vague or generic suggestions
 - Each task should take ~10–45 minutes
 - DO NOT repeat tasks from history
 - DO NOT rephrase the same task — change approach
@@ -277,10 +353,7 @@ FORMAT:
     {
       role: "user" as const,
       content: `
-User Memory:
-${JSON.stringify(memory)}
-
-Metrics:
+${tendencyBlock}Metrics:
 ${JSON.stringify(metrics)}
 
 Current Tasks:
