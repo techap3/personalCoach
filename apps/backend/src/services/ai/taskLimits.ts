@@ -220,7 +220,8 @@ export function enforceTaskTypeMix(
 
 function fillToMinimumTaskCount(
   tasks: GeneratedTask[],
-  options?: { stepTitle?: string; blockedNormalizedTitles?: Set<string> | string[] }
+  options?: { stepTitle?: string; blockedNormalizedTitles?: Set<string> | string[] },
+  targetCount = MIN_TASKS
 ) {
   const blockedTitles = new Set(
     Array.isArray(options?.blockedNormalizedTitles)
@@ -228,7 +229,7 @@ function fillToMinimumTaskCount(
       : Array.from(options?.blockedNormalizedTitles ?? [])
   );
 
-  if (tasks.length >= MIN_TASKS) {
+  if (tasks.length >= targetCount) {
     return;
   }
 
@@ -236,7 +237,7 @@ function fillToMinimumTaskCount(
   const existingTitles = new Set(tasks.map((task) => normalizeTaskTitle(task.title)));
 
   for (const fallbackTask of fallback) {
-    if (tasks.length >= MIN_TASKS) break;
+    if (tasks.length >= targetCount) break;
     const normalizedFallbackTitle = normalizeTaskTitle(fallbackTask.title);
 
     if (!existingTitles.has(normalizedFallbackTitle) && !blockedTitles.has(normalizedFallbackTitle)) {
@@ -246,7 +247,7 @@ function fillToMinimumTaskCount(
   }
 
   let fallbackIndex = 0;
-  while (tasks.length < MIN_TASKS) {
+  while (tasks.length < targetCount) {
     const baseTask = fallback[fallbackIndex % fallback.length];
     let variantCounter = 2;
     let candidateTitle = baseTask.title;
@@ -285,23 +286,36 @@ export function enforceTaskCount(
 
   fillToMinimumTaskCount(withTypes, options);
 
-  const corrected = enforceTaskTypeMix(withTypes, {
+  let corrected = enforceTaskTypeMix(withTypes, {
     blockedNormalizedTitles: options?.blockedNormalizedTitles,
   });
 
   const requestedCount = Number(options?.desiredCount);
   if (Number.isFinite(requestedCount)) {
     const clampedDesired = Math.max(MIN_TASKS, Math.min(MAX_TASKS, Math.round(requestedCount)));
+
+    if (corrected.length < clampedDesired) {
+      fillToMinimumTaskCount(corrected, options, clampedDesired);
+      corrected = enforceTaskTypeMix(corrected, {
+        blockedNormalizedTitles: options?.blockedNormalizedTitles,
+      });
+    }
+
     const sized = corrected.slice(0, clampedDesired);
     const repaired = enforceTaskTypeMix(sized, {
       blockedNormalizedTitles: options?.blockedNormalizedTitles,
-    }).slice(0, clampedDesired);
+    });
 
     if (isValidFinalTasks(repaired, { expectedCount: clampedDesired })) {
       return repaired;
     }
 
-    const fallback = enforceTaskTypeMix(corrected, {
+    const fallbackSeed = corrected.slice();
+    if (fallbackSeed.length < clampedDesired) {
+      fillToMinimumTaskCount(fallbackSeed, options, clampedDesired);
+    }
+
+    const fallback = enforceTaskTypeMix(fallbackSeed, {
       blockedNormalizedTitles: options?.blockedNormalizedTitles,
     }).slice(0, clampedDesired);
 

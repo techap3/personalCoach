@@ -78,7 +78,11 @@ describe("user memory safety", () => {
     await updateUserPreferences("token", "user-1", { force: true });
 
     expect(upsertSpy).not.toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[memory] update failed",
+      expect.objectContaining({ userId: "user-1" })
+    );
 
     errorSpy.mockRestore();
   });

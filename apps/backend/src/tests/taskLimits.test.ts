@@ -97,6 +97,27 @@ describe("task limits enforcement", () => {
     expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
   });
 
+  it("treats desiredCount as target by filling when input is smaller", () => {
+    const input: GeneratedTask[] = [
+      { title: "Only one", description: "A", difficulty: 2, task_type: "learn" },
+    ];
+
+    const output = enforceTaskCount(input, { desiredCount: 5, stepTitle: "Step 1" });
+
+    expect(output).toHaveLength(5);
+    expect(output.some((task) => task.task_type === "action")).toBe(true);
+    expect(output.some((task) => task.task_type === "reflect" || task.task_type === "review")).toBe(true);
+  });
+
+  it("trims to desiredCount safely when input is larger", () => {
+    const input = Array.from({ length: 5 }, (_, i) => makeTask(i + 1));
+    const output = enforceTaskCount(input, { desiredCount: 3, stepTitle: "Step 1" });
+
+    expect(output).toHaveLength(3);
+    expect(output.some((task) => task.task_type === "action")).toBe(true);
+    expect(output.some((task) => task.task_type === "reflect" || task.task_type === "review")).toBe(true);
+  });
+
   it("logs warning when task_type is missing or invalid and falls back to learn", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 

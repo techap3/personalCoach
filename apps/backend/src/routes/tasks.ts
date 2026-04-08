@@ -909,17 +909,7 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
 
   const userId = req.user?.id;
   if (userId && (status === "done" || status === "skipped")) {
-    void updateUserPreferences(req.token!, userId).catch((error: any) => {
-      reqLog.warn(
-        {
-          event: "memory.refresh.failed",
-          user_id: userId,
-          task_id,
-          error: error?.message,
-        },
-        "Failed to refresh user preferences after task update"
-      );
-    });
+    void updateUserPreferences(req.token!, userId);
   }
 
   if (!task) {

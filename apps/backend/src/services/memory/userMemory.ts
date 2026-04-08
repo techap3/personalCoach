@@ -163,10 +163,6 @@ async function fetchRecentTaskLogs(supabase: any, userId: string, windowDays = M
     .limit(200);
 
   if (userGoalsError) {
-    console.error("[memory] Supabase error", {
-      userId,
-      error: userGoalsError.message,
-    });
     throw userGoalsError;
   }
 
@@ -188,10 +184,6 @@ async function fetchRecentTaskLogs(supabase: any, userId: string, windowDays = M
     .limit(MAX_LOG_ROWS);
 
   if (logsError) {
-    console.error("[memory] Supabase error", {
-      userId,
-      error: logsError.message,
-    });
     throw logsError;
   }
 
@@ -245,16 +237,12 @@ export async function updateUserPreferences(
       );
 
     if (upsertError) {
-      console.error("[memory] Supabase error", {
-        userId,
-        error: upsertError.message,
-      });
       throw upsertError;
     }
 
     lastUpdateByUser.set(userId, now);
   } catch (error: any) {
-    console.error("[memory] Supabase error", {
+    console.error("[memory] update failed", {
       userId,
       error: error?.message,
     });
