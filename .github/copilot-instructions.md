@@ -162,7 +162,7 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 ### Logging
 - Backend uses **pino** (`src/logger.ts`). Import `logger` and use structured logging: `logger.info({ event: "...", ...fields }, "message")`.
 - `traceMiddleware` attaches a child logger to `req.log` with `traceId`, `method`, and `path`. Inside route handlers, prefer `req.log ?? logger` for request-scoped logging.
-- Do **not** use `console.log` for new application code. (Note: some legacy debug `console.log` calls remain in `progressionEngine.ts` — leave them as-is unless fixing that file.)
+- Do **not** use `console.*` for new application code. Some legacy backend modules still contain `console.*` calls; leave them as-is unless you are explicitly fixing those files, and otherwise prefer `req.log ?? logger` (or `logger` outside request handlers).
 
 ### AI Services
 - AI clients are created via `getAIClient()` in `src/services/ai/provider.ts`. It returns an `OpenAI` instance configured for either OpenRouter or OpenAI based on `AI_PROVIDER`.
