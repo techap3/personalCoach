@@ -109,9 +109,10 @@ pnpm test:e2e           # e2e tests
 
 ### Backend (`apps/backend/.env`)
 ```env
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=https://your-project.supabase.co            # Supabase project URL; not sufficient for migrations
 SUPABASE_PUBLISHABLE_KEY=your-supabase-anon-key
 DATABASE_URL=postgresql://postgres:password@db.host:5432/postgres?sslmode=require
+SUPABASE_DB_URL=postgresql://postgres:password@db.host:5432/postgres?sslmode=require  # alternative to DATABASE_URL for migrations
 OPENROUTER_API_KEY=sk-or-...
 AI_PROVIDER=openrouter          # or "openai"
 OPENAI_API_KEY=sk-...           # only if AI_PROVIDER=openai
