@@ -168,7 +168,7 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 - AI clients are created via `getAIClient()` in `src/services/ai/provider.ts`. It returns an `OpenAI` instance configured for either OpenRouter or OpenAI based on `AI_PROVIDER`.
 - The default model is `meta-llama/llama-3-8b-instruct`.
 - All prompts return **only valid JSON**. Parsers in `services/ai/parser.ts`, `adaptParser.ts`, etc. handle extraction and validation.
-- AI calls use a retry loop (typically 2 attempts) with error logging on failure.
+- `generatePlan` currently uses a retry loop (typically 2 attempts) with error logging on failure; do not assume all other AI entrypoints retry unless their implementation explicitly does so.
 
 ### Task Generation and Limits
 - Tasks per session: minimum 3, maximum 5 (`MIN_TASKS`, `MAX_TASKS` in `taskLimits.ts`).
