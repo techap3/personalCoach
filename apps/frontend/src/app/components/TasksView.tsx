@@ -7,7 +7,7 @@ type Task = {
   title: string;
   description: string;
   difficulty: number;
-  task_type?: "action" | "learn" | "reflect" | "review";
+  task_type?: "action" | "learn" | "reflect" | "review" | "plan";
   status?: string;
   plan_step_id?: string | number;
 };
@@ -66,6 +66,9 @@ export default function TasksView({
     }
     if (resolvedTaskType === "review") {
       return "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:text-amber-200 dark:border-amber-700";
+    }
+    if (resolvedTaskType === "plan") {
+      return "bg-violet-50 text-violet-700 border-violet-200 dark:bg-violet-900/30 dark:text-violet-200 dark:border-violet-700";
     }
 
     return "bg-gray-100 text-gray-700 border-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:border-gray-700";

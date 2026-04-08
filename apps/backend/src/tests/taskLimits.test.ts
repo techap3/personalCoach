@@ -12,13 +12,15 @@ const makeTask = (index: number): GeneratedTask => ({
   description: `Description ${index}`,
   difficulty: 2,
   task_type:
-    index % 4 === 1
+    index % 5 === 1
       ? "action"
-      : index % 4 === 2
+      : index % 5 === 2
         ? "learn"
-        : index % 4 === 3
+        : index % 5 === 3
           ? "reflect"
-          : "review",
+          : index % 5 === 4
+            ? "review"
+            : "plan",
 });
 
 describe("task limits enforcement", () => {
@@ -38,11 +40,17 @@ describe("task limits enforcement", () => {
     expect(output.length).toBeGreaterThanOrEqual(MIN_TASKS);
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
     expect(output.some((task) => task.task_type === "action")).toBe(true);
+    expect(output.some((task) => task.task_type === "plan")).toBe(true);
     expect(output.some((task) => task.task_type === "reflect" || task.task_type === "review")).toBe(true);
   });
 
   it("keeps valid-range input unchanged", () => {
-    const input = [makeTask(1), makeTask(2), makeTask(3), makeTask(4)];
+    const input: GeneratedTask[] = [
+      { title: "Action one", description: "A", difficulty: 2, task_type: "action" },
+      { title: "Reflect one", description: "B", difficulty: 2, task_type: "reflect" },
+      { title: "Review one", description: "C", difficulty: 2, task_type: "review" },
+      { title: "Plan one", description: "D", difficulty: 2, task_type: "plan" },
+    ];
     const output = enforceTaskCount(input);
 
     expect(output).toEqual(input);
@@ -53,7 +61,8 @@ describe("task limits enforcement", () => {
 
     expect(output.length).toBeGreaterThanOrEqual(MIN_TASKS);
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
-    expect(output[0].title).toBe("Spend 10 minutes actively working on your goal");
+    expect(output.every((task) => typeof task.title === "string" && task.title.trim().length >= 10)).toBe(true);
+    expect(output.every((task) => !/^task\s+[a-z0-9]+$/i.test(task.title.trim()))).toBe(true);
   });
 
   it("handles null/undefined safely", () => {
@@ -79,6 +88,7 @@ describe("task limits enforcement", () => {
 
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
     expect(types).toContain("action");
+    expect(types).toContain("plan");
     expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
   });
 
@@ -95,6 +105,7 @@ describe("task limits enforcement", () => {
 
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
     expect(types).toContain("action");
+    expect(types).toContain("plan");
     expect(types.some((type) => type === "reflect" || type === "review")).toBe(true);
   });
 
@@ -107,6 +118,7 @@ describe("task limits enforcement", () => {
 
     expect(output).toHaveLength(5);
     expect(output.some((task) => task.task_type === "action")).toBe(true);
+    expect(output.some((task) => task.task_type === "plan")).toBe(true);
     expect(output.some((task) => task.task_type === "reflect" || task.task_type === "review")).toBe(true);
   });
 
@@ -133,5 +145,36 @@ describe("task limits enforcement", () => {
     expect(warnSpy).toHaveBeenCalledTimes(2);
 
     warnSpy.mockRestore();
+  });
+
+  it("prints fallback determinism for same input twice", () => {
+    const input = [
+      {
+        title: "Only Learn A",
+        description: "Learn",
+        difficulty: 2,
+        task_type: "learn",
+      },
+    ] as GeneratedTask[];
+
+    const first = enforceTaskCount(input, {
+      desiredCount: 4,
+      stepTitle: "Determinism goal",
+      goalContext: "Determinism goal",
+      targetDifficulty: 2,
+    });
+
+    const second = enforceTaskCount(input, {
+      desiredCount: 4,
+      stepTitle: "Determinism goal",
+      goalContext: "Determinism goal",
+      targetDifficulty: 2,
+    });
+
+    console.log("\n=== FALLBACK DETERMINISM ===");
+    console.log("run_1:", first.map((task) => task.title));
+    console.log("run_2:", second.map((task) => task.title));
+
+    expect(first.map((task) => task.title)).toEqual(second.map((task) => task.title));
   });
 });

@@ -112,9 +112,11 @@ RULES:
 - Focus on execution, not planning
 - Keep tasks realistic for a beginner
 - Prioritize quality over quantity
-- Assign each task a task_type from: action, learn, reflect, review
+- Each task MUST explicitly reference the user goal or a goal synonym (goal/objective/target/milestone/project)
+- Assign each task a task_type from: action, learn, reflect, review, plan
 - Ensure at least 1 action task
 - Ensure at least 1 reflect OR review task
+- Ensure at least 1 plan task
 - Avoid clustering all tasks into the same task_type
 
 Return ONLY JSON:
@@ -125,7 +127,7 @@ Return ONLY JSON:
       "title": "string",
       "description": "string",
       "difficulty": number (1-5),
-      "task_type": "action" | "learn" | "reflect" | "review"
+      "task_type": "action" | "learn" | "reflect" | "review" | "plan"
     }
   ]
 }
@@ -142,7 +144,7 @@ export function buildStepTaskPrompt(step: {
   title: string;
   description: string;
   difficulty: number;
-}, previousTasks: string[] = [], memory?: any, desiredCount?: number): ChatCompletionMessageParam[] {
+}, previousTasks: string[] = [], memory?: any, desiredCount?: number, goalContext?: string, difficultyMode: "easy" | "medium" | "hard" = "medium"): ChatCompletionMessageParam[] {
   const hasExplicitDesiredCount =
     typeof desiredCount === "number" && Number.isFinite(desiredCount);
   const targetCount = hasExplicitDesiredCount
@@ -160,6 +162,44 @@ export function buildStepTaskPrompt(step: {
     typeof desiredCount === "number" && Number.isFinite(desiredCount)
       ? `\nPreferred task count for this request: ${Math.round(desiredCount)}`
       : "";
+  const safeGoalContext = (goalContext || "your goal").trim() || "your goal";
+  const modeRules =
+    difficultyMode === "easy"
+      ? `
+DIFFICULTY MODE: EASY
+- Each task MUST be exactly 1 step
+- Each task MUST be completable in 5-10 minutes
+- Do NOT use planning words: plan, analyze, decide
+- Keep thinking load low and execution immediate
+
+EASY EXAMPLES:
+- "Write 1 blocker for [goal]"
+- "Spend 10 minutes working on [goal]"
+`
+      : difficultyMode === "hard"
+      ? `
+DIFFICULTY MODE: HARD
+- Tasks can be 2-3 steps
+- Each task should target deeper work (30-60 minutes)
+- Every task MUST include at least one of:
+  decision making OR
+  creation OR
+  multi-step execution
+
+HARD EXAMPLES:
+- "Implement a small feature for [goal] and test it"
+- "Analyze 3 issues and decide the best fix"
+`
+      : `
+DIFFICULTY MODE: MEDIUM
+- Tasks may include 1-2 steps
+- Each task should use moderate thinking (10-30 minutes)
+- Keep scope practical and concrete
+
+MEDIUM EXAMPLES:
+- "Write 3 blockers and pick 1 to solve"
+- "Plan next 2 steps for [goal]"
+`;
 
   return [
     {
@@ -171,16 +211,36 @@ Convert ONE plan step into ${hasExplicitDesiredCount ? `exactly ${targetCount}` 
 
 RULES:
 - Return ${hasExplicitDesiredCount ? `exactly ${targetCount}` : "between 3 and 5"} tasks
-- Tasks must be doable in 30-60 minutes each
-- Be SPECIFIC (avoid vague wording)
+- Each task MUST be specific and actionable
+- Each task MUST include a clear action the user can start immediately
+- Each task MUST be completable in 10-60 minutes
+- Each task MUST produce a visible outcome (written note, code change, decision, list, summary)
+- Each task MUST explicitly reference the user goal or a goal synonym (goal/objective/target/milestone/project)
+- If a specific goal context is provided, include it naturally in each task title or description
 - Focus entirely on executing THIS step
 - Keep tasks realistic for a beginner
 - Prioritize quality over quantity
 - Do not repeat or closely resemble previous tasks provided by the user context
-- Assign each task a task_type from: action, learn, reflect, review
+- Assign each task a task_type from: action, learn, reflect, review, plan
 - Ensure at least 1 action task
 - Ensure at least 1 reflect OR review task
+- Ensure at least 1 plan task
 - Avoid clustering all tasks into the same task_type
+- Do NOT generate vague tasks like "Work on X", "Think about X", or "Explore X"
+- Do NOT use placeholders like "Task A" or "Task B"
+- Prefer concrete verbs: write, list, build, implement, review, analyze, fix, create, plan, summarize
+
+${modeRules}
+
+EXAMPLES:
+BAD: "Work on your goal"
+BAD: "Think about improvements"
+GOOD: "Write down 3 blockers preventing progress on your goal"
+GOOD: "Implement one small feature and test it locally"
+GOOD: "Write 3 blockers stopping progress on [goal] and pick 1 to solve"
+GOOD: "Implement a small part of [goal] and test it"
+GOOD: "List 2 mistakes made while working on [goal] and how to fix them"
+GOOD: "Plan the next 2 steps needed to move forward in [goal]"
 
 Return ONLY JSON:
 
@@ -190,7 +250,7 @@ Return ONLY JSON:
       "title": "string",
       "description": "string",
       "difficulty": number (1-5),
-      "task_type": "action" | "learn" | "reflect" | "review"
+      "task_type": "action" | "learn" | "reflect" | "review" | "plan"
     }
   ]
 }
@@ -198,7 +258,7 @@ Return ONLY JSON:
     },
     {
       role: "user",
-      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)${tendencyBlock}${desiredCountHint}\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
+      content: `Goal context: ${safeGoalContext}\nStep: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)${tendencyBlock}${desiredCountHint}\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
     },
   ];
 }

@@ -7,6 +7,8 @@ import {
   enforceTaskCount,
   enforceTaskTypeMix,
   enforceBehavioralPreferences,
+  filterTaskQuality,
+  filterTaskDifficultyRealism,
   enforceTargetDifficulty,
   getTaskTypeDistribution,
   isValidFinalTasks,
@@ -96,22 +98,45 @@ async function tryAcquireGenerationLock(supabase: any, sessionId: string) {
   };
 }
 
+type DbReadDegraded = {
+  degraded: true;
+  reason: "db_read_failed";
+};
+
+function isDbReadDegraded(value: unknown): value is DbReadDegraded {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as any).degraded === true &&
+      (value as any).reason === "db_read_failed"
+  );
+}
+
 /* =========================
    HELPERS
 ========================= */
 
 async function getActiveStep(supabase: any, goal_id: string) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("plan_steps")
     .select("*")
     .eq("goal_id", goal_id)
     .order("step_index", { ascending: true });
 
+  if (error) {
+    console.error("[db] read failed", error);
+
+    return {
+      degraded: true,
+      reason: "db_read_failed",
+    } as const;
+  }
+
   return data?.find((s: any) => s.status !== "completed") ?? null;
 }
 
 async function getNextStepFrom(supabase: any, goal_id: string, stepIndex: number) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("plan_steps")
     .select("*")
     .eq("goal_id", goal_id)
@@ -120,15 +145,33 @@ async function getNextStepFrom(supabase: any, goal_id: string, stepIndex: number
     .limit(1)
     .maybeSingle();
 
+  if (error) {
+    console.error("[db] read failed", error);
+
+    return {
+      degraded: true,
+      reason: "db_read_failed",
+    } as const;
+  }
+
   return data ?? null;
 }
 
 async function getTodaySessionCount(supabase: any, goal_id: string, today: string) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("task_sessions")
     .select("id")
     .eq("goal_id", goal_id)
     .eq("session_date", today);
+
+  if (error) {
+    console.error("[db] read failed", error);
+
+    return {
+      degraded: true,
+      reason: "db_read_failed",
+    } as const;
+  }
 
   return data?.length ?? 0;
 }
@@ -166,7 +209,11 @@ function normalizeDesiredCount(value: unknown): number | undefined {
 function fillToCount(
   input: unknown,
   desiredCount: number,
-  options?: { stepTitle?: string; blockedNormalizedTitles?: Set<string> }
+  options?: {
+    stepTitle?: string;
+    goalContext?: string;
+    blockedNormalizedTitles?: Set<string>;
+  }
 ) {
   const target = Math.max(1, Math.min(MAX_TASKS, Math.round(desiredCount)));
   const tasks = sanitizeGeneratedTasks(input);
@@ -177,7 +224,7 @@ function fillToCount(
     return tasks.slice(0, target);
   }
 
-  const fallback = buildDeterministicFallbackTasks(options?.stepTitle);
+  const fallback = buildDeterministicFallbackTasks(options?.stepTitle, options?.goalContext);
   let fallbackIndex = 0;
 
   while (tasks.length < target) {
@@ -380,10 +427,16 @@ async function generateTasksHandler(
 
   // 1. Get the active plan step
   let activeStep = await getActiveStep(supabase, goalId);
+  if (isDbReadDegraded(activeStep)) {
+    return res.json({ degraded: true, reason: "db_read_failed" });
+  }
 
   // Strict lock: never generate tasks for a completed step.
   if (activeStep?.status === "completed") {
     activeStep = await getNextStepFrom(supabase, goalId, activeStep.step_index);
+    if (isDbReadDegraded(activeStep)) {
+      return res.json({ degraded: true, reason: "db_read_failed" });
+    }
   }
 
   if (!activeStep) {
@@ -728,6 +781,26 @@ async function generateTasksHandler(
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  const { data: goalRow, error: goalRowError } = await supabase
+    .from("goals")
+    .select("title")
+    .eq("id", goalId)
+    .maybeSingle();
+
+  if (goalRowError) {
+    console.error("[db] read failed", goalRowError);
+
+    return res.json({
+      degraded: true,
+      reason: "db_read_failed",
+    });
+  }
+
+  const goalContext =
+    typeof goalRow?.title === "string" && goalRow.title.trim().length > 0
+      ? goalRow.title.trim()
+      : activeStep.title;
+
   const userMemory = await getUserMemory(req.token!, userId);
 
   const difficultyResult = await getTargetDifficulty(supabase, userId, goalId, {
@@ -768,6 +841,7 @@ async function generateTasksHandler(
     learn: 0,
     reflect: 0,
     review: 0,
+    plan: 0,
   };
 
   try {
@@ -776,19 +850,24 @@ async function generateTasksHandler(
       targetDifficulty: effectiveTargetDifficulty,
       userMemory,
       desiredCount: effectiveCount,
+      goalContext,
     });
 
     rawTaskCount = Array.isArray(aiTasks) ? aiTasks.length : 0;
     const sanitizedTasks = sanitizeGeneratedTasks(aiTasks);
+    const qualityFiltered = filterTaskQuality(sanitizedTasks, {
+      goalContext,
+    });
     const dedupResult = filterDuplicateTasks(
-      sanitizedTasks,
+      qualityFiltered.tasks,
       recentNormalizedTitles
     );
-    duplicatesRemoved = dedupResult.removedCount;
+    duplicatesRemoved = dedupResult.removedCount + qualityFiltered.rejectedCount;
 
     const mixedTasks = enforceTaskTypeMix(dedupResult.tasks, {
       blockedNormalizedTitles: recentNormalizedTitles,
       desiredCount: effectiveCount,
+      targetDifficulty: effectiveTargetDifficulty,
     });
 
     const behaviorAdjustedTasks = enforceBehavioralPreferences(mixedTasks, {
@@ -801,14 +880,17 @@ async function generateTasksHandler(
 
     const countedTasks = enforceTaskCount(behaviorAdjustedTasks, {
       stepTitle: activeStep.title,
+      goalContext,
       blockedNormalizedTitles: recentNormalizedTitles,
       desiredCount: effectiveCount,
+      targetDifficulty: effectiveTargetDifficulty,
     });
 
     difficultyBalancedTasks =
       typeof effectiveCount === "number"
         ? fillToCount(countedTasks, effectiveCount, {
             stepTitle: activeStep.title,
+            goalContext,
             blockedNormalizedTitles: recentNormalizedTitles,
           })
         : countedTasks;
@@ -836,31 +918,61 @@ async function generateTasksHandler(
     );
 
     if (!(isBehaviorallyValid && isFinalValid)) {
-      let fallbackTasks = buildDeterministicFallbackTasks(activeStep.title);
-      if (typeof effectiveCount === "number") {
-        fallbackTasks = fillToCount(fallbackTasks, effectiveCount, {
-          stepTitle: activeStep.title,
+      let fallbackResolved = false;
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let fallbackTasks = buildDeterministicFallbackTasks(activeStep.title, goalContext);
+        if (typeof effectiveCount === "number") {
+          fallbackTasks = fillToCount(fallbackTasks, effectiveCount, {
+            stepTitle: activeStep.title,
+            goalContext,
+            blockedNormalizedTitles: recentNormalizedTitles,
+          });
+        }
+
+        fallbackTasks = enforceTaskTypeMix(fallbackTasks, {
+          goalContext,
           blockedNormalizedTitles: recentNormalizedTitles,
+          desiredCount: effectiveCount,
+          targetDifficulty: effectiveTargetDifficulty,
         });
+        fallbackTasks = enforceTargetDifficulty(fallbackTasks, effectiveTargetDifficulty);
+
+        const realismFiltered = filterTaskDifficultyRealism(fallbackTasks);
+        fallbackTasks = realismFiltered.tasks;
+
+        if (typeof effectiveCount === "number") {
+          fallbackTasks = fillToCount(fallbackTasks, effectiveCount, {
+            stepTitle: activeStep.title,
+            goalContext,
+            blockedNormalizedTitles: recentNormalizedTitles,
+          });
+        }
+
+        fallbackTasks = enforceTaskTypeMix(fallbackTasks, {
+          goalContext,
+          blockedNormalizedTitles: recentNormalizedTitles,
+          desiredCount: effectiveCount,
+          targetDifficulty: effectiveTargetDifficulty,
+        });
+        fallbackTasks = enforceTargetDifficulty(fallbackTasks, effectiveTargetDifficulty);
+
+        if (
+          isValidFinalTasks(fallbackTasks, {
+            expectedCount: effectiveCount,
+            preferredDifficulty: userMemory?.preferred_difficulty,
+            targetDifficulty: effectiveTargetDifficulty,
+          }) && filterTaskDifficultyRealism(fallbackTasks).rejectedCount === 0
+        ) {
+          difficultyBalancedTasks = fallbackTasks;
+          fallbackResolved = true;
+          break;
+        }
       }
 
-      fallbackTasks = enforceTaskTypeMix(fallbackTasks, {
-        blockedNormalizedTitles: recentNormalizedTitles,
-        desiredCount: effectiveCount,
-      });
-      fallbackTasks = enforceTargetDifficulty(fallbackTasks, effectiveTargetDifficulty);
-
-      if (
-        !isValidFinalTasks(fallbackTasks, {
-          expectedCount: effectiveCount,
-          preferredDifficulty: userMemory?.preferred_difficulty,
-          targetDifficulty: effectiveTargetDifficulty,
-        })
-      ) {
+      if (!fallbackResolved) {
         throw new Error("CRITICAL: Unable to generate valid task set");
       }
-
-      difficultyBalancedTasks = fallbackTasks;
     }
 
     typeDistribution = getTaskTypeDistribution(difficultyBalancedTasks);
@@ -1023,7 +1135,14 @@ router.get("/daily-summary", authMiddleware, async (req: AuthRequest, res) => {
     .order("created_at", { ascending: false });
 
   if (goalsError) {
-    return res.status(500).json({ error: goalsError.message || "Failed to fetch goals" });
+    console.error("[db] read failed", goalsError);
+    return res.json({
+      greeting: "Welcome back",
+      yesterday: null,
+      today: null,
+      degraded: true,
+      reason: "db_read_failed",
+    });
   }
 
   const goalRows = Array.isArray(goals) ? goals : [];
@@ -1036,19 +1155,27 @@ router.get("/daily-summary", authMiddleware, async (req: AuthRequest, res) => {
     .maybeSingle();
 
   if (preferenceError) {
+    console.error("[db] read failed", preferenceError);
     req.log?.error({
       msg: "daily-summary user_preferences read failed",
       error: preferenceError?.message,
       user_id: userId,
       task_id: null,
     });
-    return res.status(500).json({ error: "Database read failed" });
+    return res.json({
+      greeting: "Welcome back",
+      yesterday: null,
+      today: null,
+      degraded: true,
+      reason: "db_read_failed",
+    });
   }
 
+  const rawStreak = preference?.current_streak;
   const streak =
-    typeof preference?.current_streak === "number" && Number.isFinite(preference.current_streak)
-      ? preference.current_streak
-      : 0;
+    typeof rawStreak === "number" && Number.isFinite(rawStreak)
+      ? rawStreak
+      : null;
 
   let yesterdayCompleted: number | null = 0;
   let yesterdayTotal: number | null = 0;
@@ -1083,7 +1210,14 @@ router.get("/daily-summary", authMiddleware, async (req: AuthRequest, res) => {
       .order("created_at", { ascending: true });
 
     if (todayError) {
-      return res.status(500).json({ error: todayError.message || "Failed to fetch today's tasks" });
+      console.error("[db] read failed", todayError);
+      return res.json({
+        greeting: "Welcome back",
+        yesterday: null,
+        today: null,
+        degraded: true,
+        reason: "db_read_failed",
+      });
     }
 
     todayTasks = Array.isArray(fetchedTodayTasks) ? fetchedTodayTasks : [];
@@ -1124,8 +1258,8 @@ router.get("/daily-summary", authMiddleware, async (req: AuthRequest, res) => {
   }
 
   let greeting = "Welcome back";
-  if (streak >= 5) greeting = "You're on fire 🔥";
-  else if (streak >= 2) greeting = "Good to see you again";
+  if (typeof streak === "number" && streak >= 5) greeting = "You're on fire 🔥";
+  else if (typeof streak === "number" && streak >= 2) greeting = "Good to see you again";
   else if (streak === 1) greeting = "Nice start";
 
   return res.json({
@@ -1246,7 +1380,11 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
         streak = null;
       } else {
         existingPreferences = preferencesRow;
-        streak = Number(existingPreferences?.current_streak ?? 0) || 0;
+        const rawStreak = existingPreferences?.current_streak;
+        streak =
+          typeof rawStreak === "number" && Number.isFinite(rawStreak)
+            ? rawStreak
+            : null;
 
         if (
           status === "done" &&
@@ -1305,8 +1443,17 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
 
       if (lastCompletedDate === today) {
         // Already processed streak update for this day.
-        streak = Number(existingPreferences?.current_streak ?? 0) || 0;
+        const rawStreak = existingPreferences?.current_streak;
+        streak =
+          typeof rawStreak === "number" && Number.isFinite(rawStreak)
+            ? rawStreak
+            : null;
       } else {
+        if (streak === null) {
+          console.warn("[streak] skipping write due to invalid state");
+          degraded = true;
+          feedbackMetricsAvailable = false;
+        } else {
         const newStreak = lastCompletedDate === yesterday ? streak + 1 : 1;
 
         const { error: preferenceWriteError } = await supabase
@@ -1333,6 +1480,7 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
           feedbackMetricsAvailable = false;
         } else {
           streak = newStreak;
+        }
         }
       }
     }
@@ -1608,9 +1756,15 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   }
 
   let activeStep = await getActiveStep(supabase, goalId);
+  if (isDbReadDegraded(activeStep)) {
+    return res.json({ degraded: true, reason: "db_read_failed" });
+  }
 
   if (activeStep?.status === "completed") {
     activeStep = await getNextStepFrom(supabase, goalId, activeStep.step_index);
+    if (isDbReadDegraded(activeStep)) {
+      return res.json({ degraded: true, reason: "db_read_failed" });
+    }
   }
 
   if (!activeStep) {
@@ -1659,8 +1813,14 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
   }
 
   let activeStep = await getActiveStep(supabase, goal_id);
+  if (isDbReadDegraded(activeStep)) {
+    return res.json({ degraded: true, reason: "db_read_failed" });
+  }
   if (activeStep?.status === "completed") {
     activeStep = await getNextStepFrom(supabase, goal_id, activeStep.step_index);
+    if (isDbReadDegraded(activeStep)) {
+      return res.json({ degraded: true, reason: "db_read_failed" });
+    }
   }
 
   if (!activeStep) {
@@ -1699,12 +1859,22 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
   const recentSessionIds = recentSessions.map((session: any) => session.id);
   let recentTasks: any[] = [];
   if (recentSessionIds.length) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("tasks")
       .select("*")
       .in("session_id", recentSessionIds)
       .neq("status", "archived");
-    recentTasks = data || [];
+
+    if (error) {
+      console.error("[db] read failed", error);
+
+      return res.json({
+        degraded: true,
+        reason: "db_read_failed",
+      });
+    }
+
+    recentTasks = Array.isArray(data) ? data : [];
   }
 
   const latestSession = recentSessions[0];
@@ -1775,8 +1945,11 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
     let candidate = enforceTaskCount(aiCandidate, {
       stepTitle: activeStep.title,
       desiredCount,
+      targetDifficulty: sourceDifficulty,
     });
-    candidate = enforceTaskTypeMix(candidate);
+    candidate = enforceTaskTypeMix(candidate, {
+      targetDifficulty: sourceDifficulty,
+    });
     candidate = enforceTargetDifficulty(candidate, sourceDifficulty);
 
     const behaviorAdjusted = enforceBehavioralPreferences(candidate, {
@@ -1790,8 +1963,11 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
     const postBehaviorCount = enforceTaskCount(behaviorAdjusted, {
       stepTitle: activeStep.title,
       desiredCount,
+      targetDifficulty: sourceDifficulty,
     });
-    const postBehaviorTypeMix = enforceTaskTypeMix(postBehaviorCount);
+    const postBehaviorTypeMix = enforceTaskTypeMix(postBehaviorCount, {
+      targetDifficulty: sourceDifficulty,
+    });
     const postBehaviorFinal = enforceTargetDifficulty(
       postBehaviorTypeMix,
       sourceDifficulty
@@ -1800,6 +1976,7 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
     candidate = enforceTaskCount(postBehaviorFinal, {
       stepTitle: activeStep.title,
       desiredCount,
+      targetDifficulty: sourceDifficulty,
     });
 
     const isCandidateValid = validateBehavioralPreferences(
@@ -1823,14 +2000,18 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       candidate = enforceTaskCount(sourceBaseline, {
         stepTitle: activeStep.title,
         desiredCount,
+        targetDifficulty: sourceDifficulty,
       });
-      candidate = enforceTaskTypeMix(candidate);
+      candidate = enforceTaskTypeMix(candidate, {
+        targetDifficulty: sourceDifficulty,
+      });
       candidate = enforceTargetDifficulty(candidate, sourceDifficulty);
     }
 
     const adapted = enforceTaskCount(candidate, {
       stepTitle: activeStep.title,
       desiredCount,
+      targetDifficulty: sourceDifficulty,
     });
 
     const adaptedTypeDistribution = getTaskTypeDistribution(adapted);
