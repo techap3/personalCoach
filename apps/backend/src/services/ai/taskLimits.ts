@@ -1,6 +1,7 @@
 import { normalizeTaskTitle } from "../utils/normalization";
 import type { TaskType } from "../../../../../packages/types";
 
+export const MIN_VALID_TASKS = 2;
 export const MIN_TASKS = 3;
 export const MAX_TASKS = 5;
 
@@ -181,9 +182,16 @@ export function buildDeterministicFallbackTasks(stepTitle?: string): GeneratedTa
 
 export function enforceTaskTypeMix(
   input: unknown,
-  options?: { blockedNormalizedTitles?: Set<string> | string[] }
+  options?: {
+    blockedNormalizedTitles?: Set<string> | string[];
+    desiredCount?: number;
+  }
 ): GeneratedTask[] {
   const tasks = sanitizeGeneratedTasks(input);
+  const requestedCount = Number(options?.desiredCount);
+  const expectedCount = Number.isFinite(requestedCount)
+    ? Math.max(MIN_VALID_TASKS, Math.min(MAX_TASKS, Math.round(requestedCount)))
+    : null;
 
   const blockedTitles = new Set(
     Array.isArray(options?.blockedNormalizedTitles)
@@ -197,7 +205,33 @@ export function enforceTaskTypeMix(
     tasks[index] = buildFallbackTaskByType(taskType, existingTitles, blockedTitles);
   };
 
+  const getSafeReplaceIndex = (
+    requiredType: TaskType,
+    preserveReflective = false
+  ) => {
+    const actionCount = tasks.filter((task) => task.task_type === "action").length;
+    const reflectiveCount = tasks.filter(
+      (task) => task.task_type === "reflect" || task.task_type === "review"
+    ).length;
+
+    const index = tasks.findIndex((task) => {
+      if (task.task_type === requiredType) return false;
+      if (task.task_type === "action" && actionCount === 1) return false;
+      if (
+        preserveReflective &&
+        (task.task_type === "reflect" || task.task_type === "review") &&
+        reflectiveCount === 1
+      ) {
+        return false;
+      }
+      return true;
+    });
+
+    return index >= 0 ? index : 0;
+  };
+
   const hasType = (type: TaskType) => tasks.some((task) => task.task_type === type);
+  const hasReflective = () => hasType("reflect") || hasType("review");
 
   if (!tasks.length) {
     tasks.push(buildFallbackTaskByType("action", existingTitles, blockedTitles));
@@ -206,24 +240,25 @@ export function enforceTaskTypeMix(
   }
 
   if (!hasType("action")) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
-    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : 0, "action");
+    replaceTaskWithType(getSafeReplaceIndex("action", true), "action");
   }
 
-  if (!hasType("reflect") && !hasType("review")) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
-    const fallbackIndex = tasks.findIndex((task) => task.task_type !== "action");
-    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : Math.max(0, fallbackIndex), "reflect");
+  if (!hasReflective()) {
+    replaceTaskWithType(getSafeReplaceIndex("reflect"), "reflect");
   }
 
   if (!hasType("action")) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type !== "reflect" && task.task_type !== "review");
-    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : 0, "action");
+    replaceTaskWithType(getSafeReplaceIndex("action", true), "action");
   }
 
-  const uniqueTypes = new Set(tasks.map((task) => task.task_type));
-  if (uniqueTypes.size === 1 && tasks.length > 1 && tasks[0]?.task_type !== "learn") {
-    replaceTaskWithType(1, "learn");
+  if (expectedCount !== null && expectedCount >= 3) {
+    if (!hasType("reflect")) {
+      replaceTaskWithType(getSafeReplaceIndex("reflect"), "reflect");
+    }
+
+    if (!hasType("review")) {
+      replaceTaskWithType(getSafeReplaceIndex("review"), "review");
+    }
   }
 
   return tasks;
@@ -287,53 +322,68 @@ export function enforceTaskCount(
     desiredCount?: number;
   }
 ): GeneratedTask[] {
-  const bounded = sanitizeGeneratedTasks(input).slice(0, MAX_TASKS);
-
-  fillToMinimumTaskCount(bounded, options);
-
-  const withTypes = enforceTaskTypeMix(bounded, {
-    blockedNormalizedTitles: options?.blockedNormalizedTitles,
-  });
-
-  fillToMinimumTaskCount(withTypes, options);
-
-  let corrected = enforceTaskTypeMix(withTypes, {
-    blockedNormalizedTitles: options?.blockedNormalizedTitles,
-  });
-
   const requestedCount = Number(options?.desiredCount);
-  if (Number.isFinite(requestedCount)) {
-    const clampedDesired = Math.max(MIN_TASKS, Math.min(MAX_TASKS, Math.round(requestedCount)));
+  const effectiveCount = Number.isFinite(requestedCount)
+    ? Math.max(MIN_VALID_TASKS, Math.min(MAX_TASKS, Math.round(requestedCount)))
+    : null;
 
-    if (corrected.length < clampedDesired) {
-      fillToMinimumTaskCount(corrected, options, clampedDesired);
-      corrected = enforceTaskTypeMix(corrected, {
-        blockedNormalizedTitles: options?.blockedNormalizedTitles,
-      });
-    }
-
-    const sized = corrected.slice(0, clampedDesired);
-    const repaired = enforceTaskTypeMix(sized, {
-      blockedNormalizedTitles: options?.blockedNormalizedTitles,
-    });
-
-    if (isValidFinalTasks(repaired, { expectedCount: clampedDesired })) {
-      return repaired;
-    }
-
-    const fallbackSeed = corrected.slice();
-    if (fallbackSeed.length < clampedDesired) {
-      fillToMinimumTaskCount(fallbackSeed, options, clampedDesired);
-    }
-
-    const fallback = enforceTaskTypeMix(fallbackSeed, {
-      blockedNormalizedTitles: options?.blockedNormalizedTitles,
-    }).slice(0, clampedDesired);
-
-    return fallback;
+  let working = sanitizeGeneratedTasks(input);
+  if (effectiveCount === null && working.length > MAX_TASKS) {
+    working = working.slice(0, MAX_TASKS);
+  }
+  if (effectiveCount !== null && working.length > effectiveCount) {
+    working = working.slice(0, effectiveCount);
   }
 
-  return corrected.slice(0, MAX_TASKS);
+  working = enforceTaskTypeMix(working, {
+    blockedNormalizedTitles: options?.blockedNormalizedTitles,
+    desiredCount: effectiveCount ?? undefined,
+  });
+
+  fillToMinimumTaskCount(
+    working,
+    options,
+    effectiveCount ?? MIN_TASKS
+  );
+
+  working = enforceTaskTypeMix(working, {
+    blockedNormalizedTitles: options?.blockedNormalizedTitles,
+    desiredCount: effectiveCount ?? undefined,
+  });
+
+  if (
+    isValidFinalTasks(working, {
+      expectedCount: effectiveCount ?? undefined,
+    })
+  ) {
+    return working;
+  }
+
+  let fallbackTasks = buildDeterministicFallbackTasks(options?.stepTitle);
+  if (effectiveCount !== null && fallbackTasks.length > effectiveCount) {
+    fallbackTasks = fallbackTasks.slice(0, effectiveCount);
+  }
+
+  fillToMinimumTaskCount(
+    fallbackTasks,
+    options,
+    effectiveCount ?? MIN_TASKS
+  );
+
+  fallbackTasks = enforceTaskTypeMix(fallbackTasks, {
+    blockedNormalizedTitles: options?.blockedNormalizedTitles,
+    desiredCount: effectiveCount ?? undefined,
+  });
+
+  if (
+    !isValidFinalTasks(fallbackTasks, {
+      expectedCount: effectiveCount ?? undefined,
+    })
+  ) {
+    throw new Error("CRITICAL: Unable to generate valid task set");
+  }
+
+  return fallbackTasks;
 }
 
 export function enforceTargetDifficulty(input: GeneratedTask[], targetDifficulty: number): GeneratedTask[] {
@@ -461,7 +511,7 @@ function normalizePreferenceDifficulty(value: unknown) {
 function hasValidCount(tasks: GeneratedTask[], expectedCount?: number) {
   const clampedExpected =
     typeof expectedCount === "number" && Number.isFinite(expectedCount)
-      ? Math.max(MIN_TASKS, Math.min(MAX_TASKS, Math.round(expectedCount)))
+      ? Math.max(MIN_VALID_TASKS, Math.min(MAX_TASKS, Math.round(expectedCount)))
       : null;
 
   if (clampedExpected !== null) {
@@ -471,12 +521,25 @@ function hasValidCount(tasks: GeneratedTask[], expectedCount?: number) {
   return tasks.length >= MIN_TASKS && tasks.length <= MAX_TASKS;
 }
 
-function hasRequiredTypes(tasks: GeneratedTask[]) {
+function hasRequiredTypes(tasks: GeneratedTask[], expectedCount?: number) {
+  const clampedExpected =
+    typeof expectedCount === "number" && Number.isFinite(expectedCount)
+      ? Math.max(MIN_VALID_TASKS, Math.min(MAX_TASKS, Math.round(expectedCount)))
+      : null;
+
   const hasAction = tasks.some((task) => task.task_type === "action");
-  const hasReflective = tasks.some(
-    (task) => task.task_type === "reflect" || task.task_type === "review"
-  );
-  return hasAction && hasReflective;
+  const hasReflect = tasks.some((task) => task.task_type === "reflect");
+  const hasReview = tasks.some((task) => task.task_type === "review");
+
+  if (clampedExpected === 2) {
+    return hasAction && (hasReflect || hasReview);
+  }
+
+  if (clampedExpected !== null && clampedExpected >= 3) {
+    return hasAction && hasReflect && hasReview;
+  }
+
+  return hasAction && (hasReflect || hasReview);
 }
 
 function hasDiversity(tasks: GeneratedTask[]) {
@@ -514,7 +577,7 @@ export function isValidFinalTasks(
 ) {
   return (
     hasValidCount(tasks, options?.expectedCount) &&
-    hasRequiredTypes(tasks) &&
+    hasRequiredTypes(tasks, options?.expectedCount) &&
     hasDiversity(tasks) &&
     respectsDifficulty(tasks, {
       preferredDifficulty: options?.preferredDifficulty,
@@ -571,7 +634,7 @@ export function validateBehavioralPreferences(
     skipPattern?: Record<string, number> | null;
   }
 ) {
-  const expectedCount = options?.expectedCount ?? originalTasks.length;
+  const expectedCount = options?.expectedCount;
 
   if (!isValidFinalTasks(candidateTasks, {
     expectedCount,

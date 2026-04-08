@@ -142,7 +142,12 @@ export function buildStepTaskPrompt(step: {
   title: string;
   description: string;
   difficulty: number;
-}, previousTasks: string[] = [], memory?: any): ChatCompletionMessageParam[] {
+}, previousTasks: string[] = [], memory?: any, desiredCount?: number): ChatCompletionMessageParam[] {
+  const hasExplicitDesiredCount =
+    typeof desiredCount === "number" && Number.isFinite(desiredCount);
+  const targetCount = hasExplicitDesiredCount
+    ? Math.max(1, Math.round(desiredCount))
+    : 3;
   const priorTasksContext = previousTasks.length
     ? previousTasks.map((task) => `- ${task}`).join("\n")
     : "- none";
@@ -151,6 +156,10 @@ export function buildStepTaskPrompt(step: {
   const tendencyBlock = tendencySummary
     ? `\n\nUser tendencies:\n${tendencySummary}`
     : "";
+  const desiredCountHint =
+    typeof desiredCount === "number" && Number.isFinite(desiredCount)
+      ? `\nPreferred task count for this request: ${Math.round(desiredCount)}`
+      : "";
 
   return [
     {
@@ -158,10 +167,10 @@ export function buildStepTaskPrompt(step: {
       content: `
 You are an intelligent personal coach.
 
-Convert ONE plan step into 3-5 SMALL, actionable tasks for TODAY.
+Convert ONE plan step into ${hasExplicitDesiredCount ? `exactly ${targetCount}` : "between 3 and 5"} SMALL, actionable tasks for TODAY.
 
 RULES:
-- Return between 3 and 5 tasks
+- Return ${hasExplicitDesiredCount ? `exactly ${targetCount}` : "between 3 and 5"} tasks
 - Tasks must be doable in 30-60 minutes each
 - Be SPECIFIC (avoid vague wording)
 - Focus entirely on executing THIS step
@@ -189,7 +198,7 @@ Return ONLY JSON:
     },
     {
       role: "user",
-      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)${tendencyBlock}\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
+      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)${tendencyBlock}${desiredCountHint}\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
     },
   ];
 }

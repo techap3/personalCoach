@@ -85,8 +85,8 @@ describe("task invariant pipeline", () => {
     const outputForOne = enforceTaskCount(input, { desiredCount: 1 });
     const outputForTwo = enforceTaskCount(input, { desiredCount: 2 });
 
-    expect(outputForOne.length).toBeGreaterThanOrEqual(3);
-    expect(outputForTwo.length).toBeGreaterThanOrEqual(3);
+    expect(outputForOne.length).toBeGreaterThanOrEqual(2);
+    expect(outputForTwo.length).toBeGreaterThanOrEqual(2);
     expect(hasRequiredTypes(outputForOne)).toBe(true);
     expect(hasRequiredTypes(outputForTwo)).toBe(true);
   });
@@ -94,8 +94,8 @@ describe("task invariant pipeline", () => {
   it("validates final tasks across required pass/fail cases", () => {
     const valid: GeneratedTask[] = [
       { title: "Act", description: "Do", difficulty: 2, task_type: "action" },
-      { title: "Learn", description: "Know", difficulty: 2, task_type: "learn" },
       { title: "Reflect", description: "Think", difficulty: 2, task_type: "reflect" },
+      { title: "Review", description: "Reinforce", difficulty: 2, task_type: "review" },
     ];
 
     expect(isValidFinalTasks(valid, { expectedCount: 3, targetDifficulty: 2 })).toBe(true);

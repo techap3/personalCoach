@@ -37,7 +37,8 @@ describe("task limits enforcement", () => {
 
     expect(output.length).toBeGreaterThanOrEqual(MIN_TASKS);
     expect(output.length).toBeLessThanOrEqual(MAX_TASKS);
-    expect(output[0].title).toBe("Task 1");
+    expect(output.some((task) => task.task_type === "action")).toBe(true);
+    expect(output.some((task) => task.task_type === "reflect" || task.task_type === "review")).toBe(true);
   });
 
   it("keeps valid-range input unchanged", () => {
