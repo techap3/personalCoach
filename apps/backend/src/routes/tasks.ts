@@ -160,6 +160,51 @@ const getYesterdayDateString = () => {
 
 const getNowISOString = () => new Date().toISOString();
 
+const getUtcDateString = () => new Date().toISOString().slice(0, 10);
+
+const getUtcYesterdayDateString = () => {
+  const yesterdayDate = new Date();
+  yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1);
+  return yesterdayDate.toISOString().slice(0, 10);
+};
+
+function getFeedbackMessage(
+  streak: number,
+  completedToday: number,
+  totalToday: number
+) {
+  const completionRate =
+    totalToday > 0 ? completedToday / totalToday : 0;
+
+  if (completedToday === 0) {
+    return streak > 0
+      ? "Let's get back on track"
+      : "Let's get started";
+  }
+
+  if (streak === 1) {
+    return "Nice start";
+  }
+
+  if (streak === 2 || streak === 3) {
+    return "Good consistency";
+  }
+
+  if (streak >= 4 && streak < 7) {
+    return "You're building momentum 🔥";
+  }
+
+  if (streak >= 7) {
+    return "You're on fire 🔥";
+  }
+
+  if (completionRate > 0) {
+    return "Nice progress";
+  }
+
+  return "Nice progress";
+}
+
 /* =========================
    GENERATE TASKS (SESSION-BASED)
 ========================= */
@@ -915,9 +960,6 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
     : atomicUpdateRows;
 
   const userId = req.user?.id;
-  if (userId && (status === "done" || status === "skipped")) {
-    void updateUserPreferences(req.token!, userId);
-  }
 
   if (!task) {
     const { data: existingTask } = await supabase
@@ -932,6 +974,133 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
 
     return res.status(409).json({ error: "Cannot update tasks in a completed session" });
   }
+
+  let totalToday: number | null = null;
+  let completedToday: number | null = null;
+  let streak = 0;
+  let feedbackMetricsAvailable = true;
+  let duplicateDoneRequest = false;
+
+  try {
+    const today = getUtcDateString();
+
+    let existingPreferences: any = null;
+    if (userId) {
+      const { data: preferencesRow, error: preferenceReadError } = await supabase
+        .from("user_preferences")
+        .select("current_streak, last_completed_date")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (preferenceReadError) {
+        throw preferenceReadError;
+      }
+
+      existingPreferences = preferencesRow;
+      streak = Number(existingPreferences?.current_streak ?? 0) || 0;
+
+      if (
+        status === "done" &&
+        typeof existingPreferences?.last_completed_date === "string" &&
+        existingPreferences.last_completed_date === today
+      ) {
+        duplicateDoneRequest = true;
+        feedbackMetricsAvailable = false;
+      }
+    }
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+    if (!duplicateDoneRequest) {
+      const { data: todaysTasks, error: todaysTasksError } = await supabase
+        .from("tasks")
+        .select("status")
+        .eq("goal_id", task.goal_id)
+        .gte("created_at", todayStart.toISOString())
+        .lt("created_at", tomorrowStart.toISOString())
+        .neq("status", "archived");
+
+      if (todaysTasksError) {
+        feedbackMetricsAvailable = false;
+        console.error("[feedback] failed to fetch todaysTasks", {
+          error: todaysTasksError?.message,
+        });
+      }
+
+      if (feedbackMetricsAvailable) {
+        totalToday = (todaysTasks || []).length;
+        completedToday = (todaysTasks || []).filter(
+          (item: any) => item.status === "done"
+        ).length;
+      }
+    }
+
+    if (
+      feedbackMetricsAvailable &&
+      userId &&
+      existingPreferences &&
+      status === "done" &&
+      completedToday === 1
+    ) {
+      const yesterday = getUtcYesterdayDateString();
+      const lastCompletedDate =
+        typeof existingPreferences?.last_completed_date === "string"
+          ? existingPreferences.last_completed_date
+          : null;
+
+      if (lastCompletedDate === today) {
+        // Already processed streak update for this day.
+        streak = Number(existingPreferences?.current_streak ?? 0) || 0;
+      } else {
+        streak = lastCompletedDate === yesterday ? streak + 1 : 1;
+
+        const { error: preferenceWriteError } = await supabase
+          .from("user_preferences")
+          .upsert(
+            {
+              user_id: userId,
+              current_streak: streak,
+              last_completed_date: today,
+              updated_at: getNowISOString(),
+            },
+            { onConflict: "user_id" }
+          );
+
+        if (preferenceWriteError) {
+          throw preferenceWriteError;
+        }
+      }
+    }
+
+    if (!feedbackMetricsAvailable) {
+      completedToday = null;
+      totalToday = null;
+    }
+  } catch (feedbackError: any) {
+    reqLog.warn(
+      {
+        event: "feedback.refresh.failed",
+        user_id: userId,
+        task_id,
+        error: feedbackError?.message,
+      },
+      "Failed to compute feedback loop summary"
+    );
+    completedToday = null;
+    totalToday = null;
+  }
+
+  if (userId && (status === "done" || status === "skipped")) {
+    void updateUserPreferences(req.token!, userId);
+  }
+
+  const feedbackMessage =
+    completedToday === null || totalToday === null
+      ? "Nice. Keep going"
+      : getFeedbackMessage(streak, completedToday, totalToday);
 
   // === STEP COMPLETION CHECK (ALL STEP TASKS) ===
   if (task?.plan_step_id && task?.session_id) {
@@ -952,6 +1121,12 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
 
     if (!sessionComplete) {
       return res.json({
+        status: "ok",
+        message: null,
+        feedback_message: feedbackMessage,
+        completed_today: completedToday,
+        total_today: totalToday,
+        streak,
         success: true,
         sessionCompleted: false,
         stepCompleted: false,
@@ -986,15 +1161,26 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
     const stepCompleted = await runProgressionEngine(supabase, task.goal_id);
 
     return res.json({
+      status: "ok",
+      message: sessionSummary.message,
+      feedback_message: feedbackMessage,
+      completed_today: completedToday,
+      total_today: totalToday,
+      streak,
       success: true,
       sessionCompleted: true,
       stepCompleted,
       session_summary: sessionSummary,
-      message: sessionSummary.message,
     });
   }
 
   res.json({
+    status: "ok",
+    message: null,
+    feedback_message: feedbackMessage,
+    completed_today: completedToday,
+    total_today: totalToday,
+    streak,
     success: true,
     sessionCompleted: false,
     stepCompleted: false,

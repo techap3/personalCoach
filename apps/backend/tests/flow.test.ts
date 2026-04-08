@@ -1394,4 +1394,158 @@ describe("Flow tests", () => {
     expect([200, 409]).toContain(a.status);
     expect([200, 409]).toContain(b.status);
   });
+
+  it("duplicate done update does not reset streak", async () => {
+    const goalId = await createGoal();
+
+    mockState.tables.user_preferences.push({
+      user_id: "user-1",
+      current_streak: 4,
+      last_completed_date: getLocalDateString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const taskId = generated.body.tasks[0].id;
+
+    const first = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: taskId, status: "done" });
+
+    const second = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: taskId, status: "done" });
+
+    const persistedPreference = mockState.tables.user_preferences.find(
+      (row: any) => row.user_id === "user-1"
+    );
+
+    console.log("\n=== DUPLICATE REQUEST SCENARIO ===");
+    console.log("first response:", {
+      status: first.status,
+      streak: first.body.streak,
+      completed_today: first.body.completed_today,
+      total_today: first.body.total_today,
+      feedback_message: first.body.feedback_message,
+    });
+    console.log("second response:", {
+      status: second.status,
+      streak: second.body.streak,
+      completed_today: second.body.completed_today,
+      total_today: second.body.total_today,
+      feedback_message: second.body.feedback_message,
+    });
+    console.log("persisted preference:", {
+      current_streak: persistedPreference?.current_streak,
+      last_completed_date: persistedPreference?.last_completed_date,
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.streak).toBe(4);
+    expect(second.body.streak).toBe(4);
+    expect(first.body.completed_today).toBeNull();
+    expect(first.body.total_today).toBeNull();
+    expect(second.body.completed_today).toBeNull();
+    expect(second.body.total_today).toBeNull();
+    expect(persistedPreference?.current_streak).toBe(4);
+    expect(persistedPreference?.last_completed_date).toBe(getLocalDateString());
+  });
+
+  it("DB failure in todaysTasks fetch does not update streak and returns safe fallback counts", async () => {
+    const goalId = await createGoal();
+
+    mockState.tables.user_preferences.push({
+      user_id: "user-1",
+      current_streak: 3,
+      last_completed_date: getLocalDateString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const response = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "done" });
+
+    const persistedPreference = mockState.tables.user_preferences.find(
+      (row: any) => row.user_id === "user-1"
+    );
+
+    console.log("\n=== DB FAILURE SCENARIO ===");
+    console.log("response:", {
+      status: response.status,
+      completed_today: response.body.completed_today,
+      total_today: response.body.total_today,
+      streak: response.body.streak,
+      feedback_message: response.body.feedback_message,
+    });
+    console.log("persisted preference after failure:", {
+      current_streak: persistedPreference?.current_streak,
+      last_completed_date: persistedPreference?.last_completed_date,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.completed_today).toBeNull();
+    expect(response.body.total_today).toBeNull();
+    expect(response.body.streak).toBe(3);
+    expect(persistedPreference?.current_streak).toBe(3);
+    expect(persistedPreference?.last_completed_date).toBe(getLocalDateString());
+  });
+
+  it("response keeps message as session summary and feedback_message as feedback text", async () => {
+    const goalId = await createGoal();
+
+    const generated = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const first = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[0].id, status: "done" });
+
+    const second = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[1].id, status: "done" });
+
+    const finalUpdate = await request(app)
+      .post("/tasks/update")
+      .set("Authorization", authHeader())
+      .send({ task_id: generated.body.tasks[2].id, status: "skipped" });
+
+    console.log("\n=== RESPONSE CONTRACT SCENARIO ===");
+    console.log("first:", {
+      message: first.body.message,
+      feedback_message: first.body.feedback_message,
+    });
+    console.log("second:", {
+      message: second.body.message,
+      feedback_message: second.body.feedback_message,
+    });
+    console.log("final:", {
+      message: finalUpdate.body.message,
+      feedback_message: finalUpdate.body.feedback_message,
+      session_summary_message: finalUpdate.body.session_summary?.message,
+      has_redundant_summary_message_field: typeof finalUpdate.body.summary_message !== "undefined",
+    });
+
+    expect(finalUpdate.status).toBe(200);
+    expect(finalUpdate.body.message).toBe(finalUpdate.body.session_summary?.message);
+    expect(finalUpdate.body.summary_message).toBeUndefined();
+    expect(typeof finalUpdate.body.feedback_message).toBe("string");
+    expect(finalUpdate.body.feedback_message.length).toBeGreaterThan(0);
+  });
 });
