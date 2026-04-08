@@ -87,8 +87,8 @@ const BANNED_PHRASES = [
 
 const FALLBACK_BY_TYPE: Record<TaskType, { title: string; description: string; difficulty: number }> = {
   action: {
-    title: "Spend 10 minutes working on your goal and write 1 outcome",
-    description: "Start now and capture one visible result in plain language.",
+    title: "Spend 10 minutes working on the current step and write 1 outcome",
+    description: "Start now and capture one visible result tied to the current step.",
     difficulty: 2,
   },
   learn: {
@@ -107,7 +107,7 @@ const FALLBACK_BY_TYPE: Record<TaskType, { title: string; description: string; d
     difficulty: 1,
   },
   plan: {
-    title: "Plan the next 2 concrete steps for your goal",
+    title: "Plan the next 2 concrete steps for the current step",
     description: "Choose steps you can start immediately and define one success check for each.",
     difficulty: 2,
   },
@@ -116,12 +116,12 @@ const FALLBACK_BY_TYPE: Record<TaskType, { title: string; description: string; d
 const FALLBACK_VARIANTS: Record<TaskType, Array<{ title: string; description: string; difficulty: number }>> = {
   action: [
     {
-      title: "Spend 10 minutes working on your goal and write 1 outcome",
-      description: "Start now and capture one visible result in plain language.",
+      title: "Spend 10 minutes working on the current step and write 1 outcome",
+      description: "Start now and capture one visible result tied to the current step.",
       difficulty: 2,
     },
     {
-      title: "Complete 1 small step and note what changed in one sentence",
+      title: "Complete 1 concrete step and note what changed in one sentence",
       description: "Pick a concrete micro-step and record the observable change.",
       difficulty: 2,
     },
@@ -164,14 +164,67 @@ const FALLBACK_VARIANTS: Record<TaskType, Array<{ title: string; description: st
   ],
   plan: [
     {
-      title: "Plan the next 2 concrete steps for your goal",
-      description: "Choose steps you can start immediately and define one success check for each.",
-      difficulty: 2,
+      title: "Plan 2 concrete steps for the current step and execute the first one",
+      description: "Define one success check per step and complete the first step immediately.",
+      difficulty: 3,
     },
     {
-      title: "Decide the next 2 priorities for your goal and order them",
-      description: "Pick two specific priorities and explain why this order helps progress.",
-      difficulty: 2,
+      title: "Plan 2 priorities for the current step and evaluate one immediate outcome",
+      description: "Pick two priorities, execute one action now, and evaluate the observed outcome.",
+      difficulty: 3,
+    },
+  ],
+};
+
+const HARD_FALLBACK_VARIANTS: Record<TaskType, Array<{ title: string; description: string; difficulty: number }>> = {
+  action: [
+    {
+      title: "Implement one concrete output for the current step and test 1 acceptance check",
+      description: "Ship a specific output and record one pass/fail check tied to the current step.",
+      difficulty: 3,
+    },
+    {
+      title: "Build one focused deliverable for the current step and document 2 results",
+      description: "Create a concrete deliverable and record two measurable outcomes.",
+      difficulty: 3,
+    },
+  ],
+  learn: [
+    {
+      title: "Analyze one implementation example and extract 3 execution rules",
+      description: "Use the rules immediately on your next concrete step.",
+      difficulty: 3,
+    },
+  ],
+  reflect: [
+    {
+      title: "Analyze 2 execution failures and design 1 prevention rule",
+      description: "Ground the prevention rule in concrete evidence from your last attempt.",
+      difficulty: 3,
+    },
+  ],
+  review: [
+    {
+      title: "Review 3 completed actions and write 1 ranked decision",
+      description: "Write one ranked decision that clearly changes your next move.",
+      difficulty: 3,
+    },
+    {
+      title: "Review tradeoffs in the current step and produce 1 decision note",
+      description: "Compare options and produce one decision note with clear rationale.",
+      difficulty: 3,
+    },
+  ],
+  plan: [
+    {
+      title: "Plan 3 execution steps, execute step 1, and record 1 success check",
+      description: "Sequence three specific steps and define one validation for each.",
+      difficulty: 3,
+    },
+    {
+      title: "Design a 3-step execution plan and evaluate the first outcome",
+      description: "Include two concrete risk controls to keep execution on track.",
+      difficulty: 3,
     },
   ],
 };
@@ -200,44 +253,73 @@ function buildUniqueTitle(
   existingNormalizedTitles: Set<string>,
   blockedNormalizedTitles: Set<string>
 ): string {
-  let candidate = baseTitle;
-  let suffix = 2;
+  const variations = [
+    baseTitle,
+    `${baseTitle} with one clear constraint`,
+    `${baseTitle} and compare 2 options`,
+    `${baseTitle} and capture 1 measurable outcome`,
+    `${baseTitle} with a different execution path`,
+  ];
 
-  while (
-    existingNormalizedTitles.has(normalizeTaskTitle(candidate)) ||
-    blockedNormalizedTitles.has(normalizeTaskTitle(candidate))
-  ) {
-    candidate = `${baseTitle} (${suffix})`;
-    suffix += 1;
+  for (const candidate of variations) {
+    const normalized = normalizeTaskTitle(candidate);
+    if (!existingNormalizedTitles.has(normalized) && !blockedNormalizedTitles.has(normalized)) {
+      existingNormalizedTitles.add(normalized);
+      return candidate;
+    }
   }
 
-  existingNormalizedTitles.add(normalizeTaskTitle(candidate));
-  return candidate;
+  const fallback = `${baseTitle} and produce 1 decision note`;
+  existingNormalizedTitles.add(normalizeTaskTitle(fallback));
+  return fallback;
+}
+
+function isFillerStepTitle(stepTitle?: string) {
+  const text = String(stepTitle || "").trim().toLowerCase();
+  return /^(small|next|current)\s+step$/.test(text);
+}
+
+function buildContextLabel(goalContext?: string, stepTitle?: string) {
+  const goal = String(goalContext || "").trim();
+  const step = String(stepTitle || "").trim();
+
+  const goalNorm = normalizeTextForMatching(goal);
+  const stepNorm = normalizeTextForMatching(step);
+  const isDuplicate = goalNorm.length > 0 && goalNorm === stepNorm;
+  const stepAllowed = step.length > 0 && !isFillerStepTitle(step) && !isDuplicate;
+
+  if (goal && stepAllowed) return `${goal}: ${step}`;
+  if (goal) return goal;
+  if (stepAllowed) return step;
+  return "current step";
+}
+
+function containsContext(text: string, context: string) {
+  const normalizedText = normalizeTextForMatching(text);
+  const normalizedContext = normalizeTextForMatching(context);
+  if (!normalizedContext) return false;
+  return normalizedText.includes(normalizedContext);
 }
 
 function buildFallbackTaskByType(
   taskType: TaskType,
   existingNormalizedTitles: Set<string>,
   blockedNormalizedTitles: Set<string>,
-  goalContext?: string
+  goalContext?: string,
+  stepTitle?: string,
+  targetDifficulty?: number
 ): GeneratedTask {
-  const variants = FALLBACK_VARIANTS[taskType];
-  const randomIndex = Math.floor(Math.random() * variants.length);
+  const variants = targetDifficulty === 3
+    ? HARD_FALLBACK_VARIANTS[taskType]
+    : FALLBACK_VARIANTS[taskType];
+  const randomIndex =
+    (existingNormalizedTitles.size + taskType.length) % variants.length;
   const fallback = variants[randomIndex] ?? FALLBACK_BY_TYPE[taskType];
-  let candidateTitle = fallback.title.replace(/your goal/gi, goalContext?.trim() || "your goal");
+  const context = buildContextLabel(goalContext, stepTitle);
+  let candidateTitle = fallback.title;
 
-  if (
-    goalContext &&
-    !hasGoalReference(
-      {
-        ...fallback,
-        title: candidateTitle,
-        task_type: taskType,
-      },
-      goalContext
-    )
-  ) {
-    candidateTitle = `${candidateTitle} for ${goalContext.trim()}`;
+  if (context && !containsContext(candidateTitle, context)) {
+    candidateTitle = `${candidateTitle} for ${context}`;
   }
 
   const uniqueTitle = buildUniqueTitle(
@@ -249,7 +331,9 @@ function buildFallbackTaskByType(
   return {
     ...fallback,
     title: uniqueTitle,
-    description: fallback.description.replace(/your goal/gi, goalContext?.trim() || "your goal"),
+    description: context && !containsContext(fallback.description, context)
+      ? `${fallback.description} Context: ${context}.`
+      : fallback.description,
     task_type: taskType,
   };
 }
@@ -431,18 +515,18 @@ export function filterTaskDifficultyRealism(tasks: GeneratedTask[]) {
 }
 
 export function buildDeterministicFallbackTasks(stepTitle?: string, goalContext?: string): GeneratedTask[] {
-  const context = goalContext?.trim() || stepTitle?.trim() || "your goal";
+  const context = buildContextLabel(goalContext, stepTitle);
 
   return [
     {
-      title: `Spend 10 minutes actively working on ${context}`,
-      description: `Take one concrete action that directly advances ${context}.`,
+      title: `Implement one focused action for ${context} and verify one result`,
+      description: `Complete one concrete action and capture one verifiable outcome for ${context}.`,
       difficulty: 2,
       task_type: "action",
     },
     {
-      title: `Plan the next 2 steps to move forward in ${context}`,
-      description: `Decide two concrete next steps for ${context} and note one success check for each.`,
+      title: `Plan 2 execution steps for ${context} and execute step 1`,
+      description: `Decide two concrete next steps for ${context}, execute the first one, and evaluate one outcome.`,
       difficulty: 2,
       task_type: "plan",
     },
@@ -453,10 +537,10 @@ export function buildDeterministicFallbackTasks(stepTitle?: string, goalContext?
       task_type: "learn",
     },
     {
-      title: `Reflect on what worked and what did not while working on ${context}`,
-      description: "Write one win, one blocker, and one adjustment for your next session.",
-      difficulty: 1,
-      task_type: "reflect",
+      title: `Review 3 completed actions for ${context} and write 1 next decision`,
+      description: `Write a short output summary and one decision to guide your next session on ${context}.`,
+      difficulty: 2,
+      task_type: "review",
     },
   ];
 }
@@ -467,6 +551,7 @@ export function enforceTaskTypeMix(
     blockedNormalizedTitles?: Set<string> | string[];
     desiredCount?: number;
     goalContext?: string;
+    stepTitle?: string;
     targetDifficulty?: number;
   }
 ): GeneratedTask[] {
@@ -489,7 +574,9 @@ export function enforceTaskTypeMix(
       taskType,
       existingTitles,
       blockedTitles,
-      options?.goalContext
+      options?.goalContext,
+      options?.stepTitle,
+      options?.targetDifficulty
     );
   };
 
@@ -567,9 +654,9 @@ export function enforceTaskTypeMix(
   }
 
   if (!tasks.length) {
-    tasks.push(buildFallbackTaskByType("action", existingTitles, blockedTitles, options?.goalContext));
-    tasks.push(buildFallbackTaskByType("plan", existingTitles, blockedTitles, options?.goalContext));
-    tasks.push(buildFallbackTaskByType("reflect", existingTitles, blockedTitles, options?.goalContext));
+    tasks.push(buildFallbackTaskByType("action", existingTitles, blockedTitles, options?.goalContext, options?.stepTitle, options?.targetDifficulty));
+    tasks.push(buildFallbackTaskByType("plan", existingTitles, blockedTitles, options?.goalContext, options?.stepTitle, options?.targetDifficulty));
+    tasks.push(buildFallbackTaskByType("review", existingTitles, blockedTitles, options?.goalContext, options?.stepTitle, options?.targetDifficulty));
     return tasks;
   }
 
@@ -611,6 +698,7 @@ function fillToMinimumTaskCount(
   options?: {
     stepTitle?: string;
     goalContext?: string;
+    targetDifficulty?: number;
     blockedNormalizedTitles?: Set<string> | string[];
   },
   targetCount = MIN_TASKS
@@ -641,15 +729,8 @@ function fillToMinimumTaskCount(
   let fallbackIndex = 0;
   while (tasks.length < targetCount) {
     const baseTask = fallback[fallbackIndex % fallback.length];
-    let variantCounter = 2;
-    let candidateTitle = baseTask.title;
-    let normalizedCandidate = normalizeTaskTitle(candidateTitle);
-
-    while (existingTitles.has(normalizedCandidate) || blockedTitles.has(normalizedCandidate)) {
-      candidateTitle = `${baseTask.title} ${variantCounter}`;
-      normalizedCandidate = normalizeTaskTitle(candidateTitle);
-      variantCounter += 1;
-    }
+    const candidateTitle = buildUniqueTitle(baseTask.title, existingTitles, blockedTitles);
+    const normalizedCandidate = normalizeTaskTitle(candidateTitle);
 
     tasks.push({
       ...baseTask,
@@ -658,6 +739,97 @@ function fillToMinimumTaskCount(
     existingTitles.add(normalizedCandidate);
     fallbackIndex += 1;
   }
+}
+
+function hasOutputOrMultiStep(task: GeneratedTask) {
+  const text = `${task.title} ${task.description || ""}`.toLowerCase();
+  const hasOutput = /\b(write|create|design|plan|implement|build|test|summarize|list)\b/i.test(text);
+  const hasMultiStep = /\b(and|then|followed by)\b/i.test(text);
+  return hasOutput || hasMultiStep;
+}
+
+function hasExecutionDecisionOrMultiStep(task: GeneratedTask) {
+  const text = `${task.title} ${task.description || ""}`.toLowerCase();
+  const hasExecution = /\b(execute|implement|build|test|ship|deliver|apply)\b/i.test(text);
+  const hasDecision = /\b(decide|decision|evaluate|compare|rank|prioritize|choose)\b/i.test(text);
+  const hasMultiStep = /\b(and|then|followed by)\b/i.test(text);
+  return hasExecution || hasDecision || hasMultiStep;
+}
+
+function isHardDifficultyValid(task: GeneratedTask) {
+  const text = `${task.title} ${task.description || ""}`.toLowerCase();
+  const title = String(task.title || "").trim().toLowerCase();
+  if (/\bspend\b/i.test(text)) return false;
+  if (/\breflect\b/i.test(text)) return false;
+  if (title.startsWith("list 2 mistakes and 1 correction")) return false;
+  if (title.startsWith("implement one focused action")) return false;
+  if (/\breview\b/i.test(text) && !/\b(write|create|design|plan|implement|build|test|summarize|list)\b/i.test(text)) {
+    return false;
+  }
+  return hasOutputOrMultiStep(task) && hasExecutionDecisionOrMultiStep(task);
+}
+
+function enforceHardDifficultyQuality(
+  tasks: GeneratedTask[],
+  options?: {
+    stepTitle?: string;
+    goalContext?: string;
+    blockedNormalizedTitles?: Set<string> | string[];
+  }
+) {
+  const blockedTitles = new Set(
+    Array.isArray(options?.blockedNormalizedTitles)
+      ? options?.blockedNormalizedTitles
+      : Array.from(options?.blockedNormalizedTitles ?? [])
+  );
+  const existingTitles = new Set(tasks.map((task) => normalizeTaskTitle(task.title)));
+  const replacementTypes: TaskType[] = ["action", "plan", "review", "action", "plan"];
+
+  for (let i = 0; i < tasks.length; i += 1) {
+    if (tasks[i].task_type === "reflect" || !isHardDifficultyValid(tasks[i])) {
+      const replacement = buildFallbackTaskByType(
+        replacementTypes[i % replacementTypes.length],
+        existingTitles,
+        blockedTitles,
+        options?.goalContext,
+        options?.stepTitle,
+        3
+      );
+      tasks[i] = { ...replacement, difficulty: 3 };
+    } else {
+      tasks[i] = { ...tasks[i], difficulty: Math.max(3, tasks[i].difficulty) };
+    }
+  }
+
+  let signalCount = tasks.filter((task) => hasOutputOrMultiStep(task)).length;
+  for (let i = 0; i < tasks.length && signalCount < 2; i += 1) {
+    if (hasOutputOrMultiStep(tasks[i])) continue;
+    const replacement = buildFallbackTaskByType(
+      replacementTypes[(i + 1) % replacementTypes.length],
+      existingTitles,
+      blockedTitles,
+      options?.goalContext,
+      options?.stepTitle,
+      3
+    );
+    tasks[i] = { ...replacement, difficulty: 3 };
+    signalCount = tasks.filter((task) => hasOutputOrMultiStep(task)).length;
+  }
+
+  for (let i = 0; i < tasks.length; i += 1) {
+    if (hasExecutionDecisionOrMultiStep(tasks[i])) continue;
+    const replacement = buildFallbackTaskByType(
+      replacementTypes[(i + 2) % replacementTypes.length],
+      existingTitles,
+      blockedTitles,
+      options?.goalContext,
+      options?.stepTitle,
+      3
+    );
+    tasks[i] = { ...replacement, difficulty: 3 };
+  }
+
+  return tasks;
 }
 
 export function enforceTaskCount(
@@ -689,6 +861,7 @@ export function enforceTaskCount(
 
   working = enforceTaskTypeMix(working, {
     goalContext: options?.goalContext,
+    stepTitle: options?.stepTitle,
     blockedNormalizedTitles: options?.blockedNormalizedTitles,
     desiredCount: effectiveCount ?? undefined,
     targetDifficulty: options?.targetDifficulty,
@@ -703,6 +876,10 @@ export function enforceTaskCount(
     working = difficultyFiltered.tasks;
   }
 
+  if (options?.targetDifficulty === 3) {
+    working = enforceHardDifficultyQuality(working, options);
+  }
+
   fillToMinimumTaskCount(
     working,
     options,
@@ -711,6 +888,7 @@ export function enforceTaskCount(
 
   working = enforceTaskTypeMix(working, {
     goalContext: options?.goalContext,
+    stepTitle: options?.stepTitle,
     blockedNormalizedTitles: options?.blockedNormalizedTitles,
     desiredCount: effectiveCount ?? undefined,
     targetDifficulty: options?.targetDifficulty,
@@ -728,6 +906,7 @@ export function enforceTaskCount(
 
   working = enforceTaskTypeMix(working, {
     goalContext: options?.goalContext,
+    stepTitle: options?.stepTitle,
     blockedNormalizedTitles: options?.blockedNormalizedTitles,
     desiredCount: effectiveCount ?? undefined,
     targetDifficulty: options?.targetDifficulty,
@@ -757,6 +936,7 @@ export function enforceTaskCount(
 
     fallbackTasks = enforceTaskTypeMix(fallbackTasks, {
       goalContext: options?.goalContext,
+      stepTitle: options?.stepTitle,
       blockedNormalizedTitles: options?.blockedNormalizedTitles,
       desiredCount: effectiveCount ?? undefined,
       targetDifficulty: options?.targetDifficulty,
@@ -771,6 +951,10 @@ export function enforceTaskCount(
       fallbackTasks = fallbackDifficultyFiltered.tasks;
     }
 
+    if (options?.targetDifficulty === 3) {
+      fallbackTasks = enforceHardDifficultyQuality(fallbackTasks, options);
+    }
+
     fillToMinimumTaskCount(
       fallbackTasks,
       options,
@@ -779,6 +963,7 @@ export function enforceTaskCount(
 
     fallbackTasks = enforceTaskTypeMix(fallbackTasks, {
       goalContext: options?.goalContext,
+      stepTitle: options?.stepTitle,
       blockedNormalizedTitles: options?.blockedNormalizedTitles,
       desiredCount: effectiveCount ?? undefined,
       targetDifficulty: options?.targetDifficulty,
@@ -811,6 +996,7 @@ export function enforceTaskCount(
 
   guaranteed = enforceTaskTypeMix(guaranteed, {
     goalContext: options?.goalContext,
+    stepTitle: options?.stepTitle,
     blockedNormalizedTitles: options?.blockedNormalizedTitles,
     desiredCount: effectiveCount ?? undefined,
     targetDifficulty: options?.targetDifficulty,
@@ -818,6 +1004,10 @@ export function enforceTaskCount(
 
   if (hasTargetDifficulty) {
     guaranteed = enforceTargetDifficulty(guaranteed, options.targetDifficulty);
+  }
+
+  if (options?.targetDifficulty === 3) {
+    guaranteed = enforceHardDifficultyQuality(guaranteed, options);
   }
 
   const finalTasks = guaranteed;

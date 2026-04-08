@@ -6,13 +6,13 @@ import {
 } from "../services/difficultyService";
 
 describe("difficulty balancing rules", () => {
-  it("maps low completion_rate to difficulty 1", () => {
+  it("smooths low completion_rate by at most one step", () => {
     const target = chooseTargetDifficulty(3, {
       completion_rate: 0.2,
       skip_rate: 0.75,
     });
 
-    expect(target).toBe(1);
+    expect(target).toBe(2);
   });
 
   it("maps high completion_rate to difficulty 3", () => {
@@ -41,10 +41,10 @@ describe("difficulty balancing rules", () => {
     expect(metrics.total_tasks).toBe(0);
   });
 
-  it("always returns difficulty in 1-3 buckets", () => {
-    expect(chooseTargetDifficulty(5, { completion_rate: 0.95, skip_rate: 0 })).toBe(3);
+  it("respects one-step smoothing and remains bounded", () => {
+    expect(chooseTargetDifficulty(5, { completion_rate: 0.95, skip_rate: 0 })).toBe(4);
     expect(chooseTargetDifficulty(1, { completion_rate: 0, skip_rate: 0.9 })).toBe(1);
-    expect(chooseTargetDifficulty(4, { completion_rate: 0.4, skip_rate: 0.9 })).toBe(2);
+    expect(chooseTargetDifficulty(4, { completion_rate: 0.4, skip_rate: 0.9 })).toBe(3);
     expect(chooseTargetDifficulty(2, { completion_rate: 0.95, skip_rate: 0 })).toBe(3);
     expect(clampDifficulty(9)).toBe(5);
     expect(clampDifficulty(-2)).toBe(1);

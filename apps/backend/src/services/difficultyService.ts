@@ -46,20 +46,26 @@ export function chooseTargetDifficulty(
   metrics: Pick<DifficultyMetrics, "completion_rate" | "skip_rate">
 ) {
   const completion = Number(metrics.completion_rate);
+  const current = clampDifficulty(currentDifficulty);
+  let computed = 2;
 
   if (!Number.isFinite(completion)) {
-    return 2;
+    computed = 2;
+  } else if (completion < 0.4) {
+    computed = 1;
+  } else if (completion < 0.75) {
+    computed = 2;
+  } else {
+    computed = 3;
   }
 
-  if (completion < 0.4) {
-    return 1;
+  const delta = computed - current;
+
+  if (Math.abs(delta) > 1) {
+    return current + Math.sign(delta);
   }
 
-  if (completion < 0.75) {
-    return 2;
-  }
-
-  return 3;
+  return computed;
 }
 
 function clampPreferenceDifficulty(value: number) {

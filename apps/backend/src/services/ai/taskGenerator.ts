@@ -64,8 +64,8 @@ function buildDifficultyFallbackTask(
 
   const hardFallbacks: GeneratedTask[] = [
     {
-      title: `Plan the next 3 steps to move ${context} forward`,
-      description: `Plan the sequence and define one success check for each step.`,
+      title: `Plan 3 execution steps for ${context} and execute step 1`,
+      description: `Plan the sequence, complete the first step now, and evaluate one concrete outcome.`,
       difficulty: 3,
       task_type: "plan",
     },
@@ -87,12 +87,15 @@ function buildDifficultyFallbackTask(
 
 function passesDifficultyStructure(task: GeneratedTask, difficulty: number) {
   const text = `${task.title || ""} ${task.description || ""}`.toLowerCase();
+  const hasOutputSignal = /\b(write|create|design|plan|implement|build|test|summarize|list)\b/i.test(text);
+  const hasMultiStepSignal = /\b(and|then|followed by)\b/i.test(text);
+  const hasStrongHardSignal = /\b(plan|build|implement|analyze|create|design)\b/i.test(text);
 
   if (difficulty === 1) {
     if (task.task_type !== "action" && task.task_type !== "reflect") {
       return false;
     }
-    if (/\b(plan|analyze|decide)\b/i.test(text)) {
+    if (/\b(plan|analyze|decide|followed by|and then|implement|build)\b/i.test(text)) {
       return false;
     }
     return true;
@@ -105,7 +108,19 @@ function passesDifficultyStructure(task: GeneratedTask, difficulty: number) {
     return true;
   }
 
-  if (!/\b(plan|build|implement|analyze)\b/i.test(text)) {
+  const hasSpend = /\bspend\b/i.test(text);
+  const hasReflect = /\breflect\b/i.test(text);
+  const hasReview = /\breview\b/i.test(text);
+
+  if (hasSpend || hasReflect) {
+    return false;
+  }
+
+  if (hasReview && !hasOutputSignal) {
+    return false;
+  }
+
+  if (!hasStrongHardSignal && !hasOutputSignal && !hasMultiStepSignal) {
     return false;
   }
 
@@ -134,7 +149,10 @@ function enforceDifficultyStructure(
 
   if (
     normalizedDifficulty === 3 &&
-    !replaced.some((task) => /\b(plan|build|implement|analyze)\b/i.test(`${task.title} ${task.description}`))
+    !replaced.some((task) => {
+      const text = `${task.title || ""} ${task.description || ""}`.toLowerCase();
+      return /\b(write|create|design|plan|and|then|followed by|build|implement|analyze)\b/i.test(text);
+    })
   ) {
     replaced[0] = buildDifficultyFallbackTask(3, goalContext, 0);
   }
@@ -325,14 +343,33 @@ export async function generateTasksForStep(step: {
       goalContext: options?.goalContext || step.title,
       blockedNormalizedTitles: recentNormalizedTitles,
       desiredCount: options?.desiredCount,
-      targetDifficulty: options?.targetDifficulty,
+      targetDifficulty,
     });
 
-    return enforceDifficultyStructure(
+    const structured = enforceDifficultyStructure(
       enforced,
       target,
       options?.goalContext || step.title
     );
+
+    // Final dedupe after structure replacement to avoid repeated fallback titles.
+    const seenFinal = new Set<string>();
+    const postStructuredDeduped = structured.filter((task) => {
+      const normalized = normalizeTaskTitle(task.title);
+      if (!normalized) return false;
+      if (seenFinal.has(normalized)) return false;
+      if (recentNormalizedTitles.has(normalized)) return false;
+      seenFinal.add(normalized);
+      return true;
+    });
+
+    return enforceTaskCount(postStructuredDeduped, {
+      stepTitle: step.title,
+      goalContext: options?.goalContext || step.title,
+      blockedNormalizedTitles: recentNormalizedTitles,
+      desiredCount: options?.desiredCount,
+      targetDifficulty,
+    });
   } catch (err) {
     console.error("❌ Step task parse failed:", err);
     return [];

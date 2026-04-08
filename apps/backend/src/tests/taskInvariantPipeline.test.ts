@@ -23,10 +23,10 @@ function hasHardSignal(tasks: GeneratedTask[]) {
 describe("task invariant pipeline", () => {
   it("keeps core invariants after count + behavioral + validation pipeline", () => {
     const generated: GeneratedTask[] = [
-      { title: "Run intervals", description: "Sprint set", difficulty: 3, task_type: "action" },
-      { title: "Learn pacing", description: "Technique", difficulty: 3, task_type: "learn" },
-      { title: "Reflect recovery", description: "Journal", difficulty: 3, task_type: "reflect" },
-      { title: "Review form", description: "Video check", difficulty: 3, task_type: "review" },
+      { title: "Implement one workout logging feature", description: "Build and test one flow", difficulty: 3, task_type: "action" },
+      { title: "Analyze one pacing report", description: "Analyze trend and pick one adjustment", difficulty: 3, task_type: "learn" },
+      { title: "Plan next 2 recovery sessions", description: "Plan concrete schedule", difficulty: 3, task_type: "reflect" },
+      { title: "Review form and decide one correction", description: "Decide one change and apply", difficulty: 3, task_type: "review" },
     ];
 
     const counted = enforceTaskCount(generated, { desiredCount: 4, targetDifficulty: 3 });

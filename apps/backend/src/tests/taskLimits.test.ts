@@ -146,4 +146,35 @@ describe("task limits enforcement", () => {
 
     warnSpy.mockRestore();
   });
+
+  it("prints fallback determinism for same input twice", () => {
+    const input = [
+      {
+        title: "Only Learn A",
+        description: "Learn",
+        difficulty: 2,
+        task_type: "learn",
+      },
+    ] as GeneratedTask[];
+
+    const first = enforceTaskCount(input, {
+      desiredCount: 4,
+      stepTitle: "Determinism goal",
+      goalContext: "Determinism goal",
+      targetDifficulty: 2,
+    });
+
+    const second = enforceTaskCount(input, {
+      desiredCount: 4,
+      stepTitle: "Determinism goal",
+      goalContext: "Determinism goal",
+      targetDifficulty: 2,
+    });
+
+    console.log("\n=== FALLBACK DETERMINISM ===");
+    console.log("run_1:", first.map((task) => task.title));
+    console.log("run_2:", second.map((task) => task.title));
+
+    expect(first.map((task) => task.title)).toEqual(second.map((task) => task.title));
+  });
 });

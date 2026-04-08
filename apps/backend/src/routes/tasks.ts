@@ -781,11 +781,20 @@ async function generateTasksHandler(
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const { data: goalRow } = await supabase
+  const { data: goalRow, error: goalRowError } = await supabase
     .from("goals")
     .select("title")
     .eq("id", goalId)
     .maybeSingle();
+
+  if (goalRowError) {
+    console.error("[db] read failed", goalRowError);
+
+    return res.json({
+      degraded: true,
+      reason: "db_read_failed",
+    });
+  }
 
   const goalContext =
     typeof goalRow?.title === "string" && goalRow.title.trim().length > 0
