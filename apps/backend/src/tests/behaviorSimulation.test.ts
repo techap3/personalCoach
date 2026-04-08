@@ -361,4 +361,98 @@ describe("behavior-driven adaptation simulation", () => {
 
     expect(result.finalTasks).toHaveLength(3);
   });
+
+  it("simulates day-by-day streak updates with printed outputs", () => {
+    type Action = "done" | "skipped";
+    type ProgressState = {
+      streak: number;
+      lastCompletedDate: string | null;
+      completedToday: number;
+      totalToday: number;
+    };
+
+    const getMessage = (streak: number, completionRateToday: number) => {
+      if (streak >= 5) return "You're on fire 🔥";
+      if (completionRateToday >= 0.7) return "Great consistency";
+      if (completionRateToday > 0) return "Nice. You're making progress";
+      return "Let's get started";
+    };
+
+    const shiftDay = (dateIso: string, days: number) => {
+      const date = new Date(`${dateIso}T00:00:00.000Z`);
+      date.setUTCDate(date.getUTCDate() + days);
+      return date.toISOString().slice(0, 10);
+    };
+
+    const applyDayAction = (
+      state: ProgressState,
+      dateIso: string,
+      action: Action
+    ): ProgressState => {
+      const next: ProgressState = {
+        ...state,
+        totalToday: state.totalToday + 1,
+        completedToday: state.completedToday,
+      };
+
+      if (action === "done") {
+        next.completedToday += 1;
+        if (next.completedToday === 1) {
+          const yesterday = shiftDay(dateIso, -1);
+          next.streak = next.lastCompletedDate === yesterday ? next.streak + 1 : 1;
+          next.lastCompletedDate = dateIso;
+        }
+      }
+
+      const completionRateToday =
+        next.totalToday > 0 ? next.completedToday / next.totalToday : 0;
+
+      simulationLog(`\n--- ${dateIso} (${action}) ---`);
+      simulationLog(`completed_today: ${next.completedToday}`);
+      simulationLog(`total_today: ${next.totalToday}`);
+      simulationLog(`streak: ${next.streak}`);
+      simulationLog(`message: ${getMessage(next.streak, completionRateToday)}`);
+
+      return next;
+    };
+
+    simulationLog("\n=== STREAK FEEDBACK SIMULATION ===");
+
+    // Day 1: complete 1 task -> streak = 1
+    let state: ProgressState = {
+      streak: 0,
+      lastCompletedDate: null,
+      completedToday: 0,
+      totalToday: 0,
+    };
+    state = applyDayAction(state, "2026-04-01", "done");
+    expect(state.streak).toBe(1);
+
+    // Day 2: complete 1 task -> streak = 2
+    state = {
+      ...state,
+      completedToday: 0,
+      totalToday: 0,
+    };
+    state = applyDayAction(state, "2026-04-02", "done");
+    expect(state.streak).toBe(2);
+
+    // Day 3: skip -> streak unchanged
+    state = {
+      ...state,
+      completedToday: 0,
+      totalToday: 0,
+    };
+    state = applyDayAction(state, "2026-04-03", "skipped");
+    expect(state.streak).toBe(2);
+
+    // Day 4: complete -> streak resets to 1
+    state = {
+      ...state,
+      completedToday: 0,
+      totalToday: 0,
+    };
+    state = applyDayAction(state, "2026-04-04", "done");
+    expect(state.streak).toBe(1);
+  });
 });
