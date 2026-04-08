@@ -132,9 +132,9 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 ## Key Architecture Patterns
 
 ### Authentication and Supabase Client
-- All backend API routes except `GET /health` require `Authorization: Bearer <supabase-jwt>`.
+- Main app backend endpoints (for example, goals/tasks/adapt routes) require `Authorization: Bearer <supabase-jwt>`. `GET /health` and `/test/*` are unauthenticated health/dev-only diagnostic routes.
 - `authMiddleware` (`src/middleware/auth.ts`) decodes the JWT (without verification — Supabase RLS handles enforcement) and attaches `req.user.id`, `req.user.email`, and `req.token`.
-- **Never call `getSupabaseClient()` without the user's JWT token.** Always pass `req.token!`.
+- **For user-scoped requests, never call `getSupabaseClient()` without the user's JWT token.** Always pass `req.token!` when the route is authenticated via `authMiddleware`.
 - The Supabase client is created per-request, scoped to the user's JWT, so all DB queries automatically respect Row-Level Security (RLS).
 - **Do not use `SECURITY DEFINER` SQL functions** unless ownership is enforced and row_security is forced. Prefer `security invoker`.
 
