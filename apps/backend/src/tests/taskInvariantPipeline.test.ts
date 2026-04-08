@@ -16,6 +16,10 @@ function hasRequiredTypes(tasks: GeneratedTask[]) {
   return hasAction && hasReflective;
 }
 
+function hasHardSignal(tasks: GeneratedTask[]) {
+  return tasks.some((task) => /\b(plan|implement|analyze|build)\b/i.test(`${task.title} ${task.description || ""}`));
+}
+
 describe("task invariant pipeline", () => {
   it("keeps core invariants after count + behavioral + validation pipeline", () => {
     const generated: GeneratedTask[] = [
@@ -25,13 +29,13 @@ describe("task invariant pipeline", () => {
       { title: "Review form", description: "Video check", difficulty: 3, task_type: "review" },
     ];
 
-    const counted = enforceTaskCount(generated, { desiredCount: 4 });
+    const counted = enforceTaskCount(generated, { desiredCount: 4, targetDifficulty: 3 });
     const behaviorAdjusted = enforceBehavioralPreferences(counted, {
       skipPattern: { learn: 4 },
       originalTasks: counted,
     });
     const finalTasks = enforceTargetDifficulty(
-      enforceTaskCount(behaviorAdjusted, { desiredCount: 4 }),
+      enforceTaskCount(behaviorAdjusted, { desiredCount: 4, targetDifficulty: 3 }),
       3
     );
 
@@ -44,6 +48,7 @@ describe("task invariant pipeline", () => {
     }, {});
     expect(Math.max(...Object.values(distribution))).toBeLessThanOrEqual(3);
     expect(finalTasks.every((task) => task.difficulty >= 1 && task.difficulty <= 5)).toBe(true);
+    expect(hasHardSignal(finalTasks)).toBe(true);
 
     expect(
       isValidFinalTasks(finalTasks, {
@@ -93,9 +98,9 @@ describe("task invariant pipeline", () => {
 
   it("validates final tasks across required pass/fail cases", () => {
     const valid: GeneratedTask[] = [
-      { title: "Act", description: "Do", difficulty: 2, task_type: "action" },
-      { title: "Reflect", description: "Think", difficulty: 2, task_type: "reflect" },
-      { title: "Review", description: "Reinforce", difficulty: 2, task_type: "review" },
+      { title: "Write 3 blockers and pick 1", description: "Do", difficulty: 2, task_type: "action" },
+      { title: "Reflect on one blocker", description: "Think", difficulty: 2, task_type: "reflect" },
+      { title: "Review progress in 3 bullets", description: "Reinforce", difficulty: 2, task_type: "review" },
     ];
 
     expect(isValidFinalTasks(valid, { expectedCount: 3, targetDifficulty: 2 })).toBe(true);
@@ -105,8 +110,8 @@ describe("task invariant pipeline", () => {
 
     const missingReflection = [
       { title: "Act", description: "Do", difficulty: 2, task_type: "action" as const },
-      { title: "Learn", description: "Know", difficulty: 2, task_type: "learn" as const },
-      { title: "Learn2", description: "Know", difficulty: 2, task_type: "learn" as const },
+      { title: "Action two", description: "Know", difficulty: 2, task_type: "action" as const },
+      { title: "Action three", description: "Know", difficulty: 2, task_type: "action" as const },
     ];
     expect(isValidFinalTasks(missingReflection, { expectedCount: 3, targetDifficulty: 2 })).toBe(false);
 

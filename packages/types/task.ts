@@ -1,6 +1,6 @@
 export type TaskStatus = "pending" | "done" | "skipped";
 
-export type TaskType = "learn" | "action" | "reflect" | "review";
+export type TaskType = "learn" | "action" | "reflect" | "review" | "plan";
 
 export interface Task {
   id?: string;

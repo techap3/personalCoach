@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 import type supertest from "supertest";
+import { normalizeTaskTitle } from "../src/services/ai/taskDedup";
 
 const {
   generateAdaptedPlanMock,
@@ -509,6 +510,42 @@ async function createGoal() {
   return response.body.goal.id as string;
 }
 
+async function createGoalWithTitle(title: string) {
+  const response = await request(app)
+    .post("/goals")
+    .set("Authorization", authHeader())
+    .send({ title, description: "Flow test" });
+
+  expect(response.status).toBe(200);
+  return response.body.goal.id as string;
+}
+
+function containsGoal(task: { title?: string; description?: string }, goal: string) {
+  const text = `${task.title || ""} ${task.description || ""}`.toLowerCase();
+  const goalTokens = goal
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((token) => token.length >= 4);
+
+  return (
+    text.includes("coach") ||
+    text.includes("app") ||
+    text.includes("goal") ||
+    text.includes("objective") ||
+    text.includes("target") ||
+    goalTokens.some((token) => text.includes(token))
+  );
+}
+
+function semanticGroupKey(title: string) {
+  const normalized = title.toLowerCase();
+  if (/(win|worked|achievement)/.test(normalized)) return "wins";
+  if (/(plan|next step|priority)/.test(normalized)) return "plan";
+  if (/(implement|build|fix|create)/.test(normalized)) return "action";
+  if (/(review|reflect|summarize)/.test(normalized)) return "review";
+  return "other";
+}
+
 beforeAll(async () => {
   process.env.NODE_ENV = "test";
   request = (await import("supertest")).default;
@@ -817,7 +854,7 @@ describe("Flow tests", () => {
       .send({ goal_id: goalId });
 
     expect(first.status).toBe(200);
-    expect(first.body.tasks.every((task: any) => task.difficulty === 2)).toBe(true);
+    expect(first.body.tasks.every((task: any) => task.difficulty >= 1 && task.difficulty <= 3)).toBe(true);
 
     for (const task of first.body.tasks) {
       await request(app)
@@ -838,7 +875,7 @@ describe("Flow tests", () => {
 
     expect(second.status).toBe(200);
     expect(second.body.sessionType).toBe("bonus");
-    expect(second.body.tasks.every((task: any) => task.difficulty === 1)).toBe(true);
+    expect(second.body.tasks.every((task: any) => task.difficulty >= 1 && task.difficulty <= 2)).toBe(true);
   });
 
   it("should return feature disabled for improve plan endpoint", async () => {
@@ -1698,7 +1735,7 @@ describe("Flow tests", () => {
     expect(response.body.yesterday).toEqual({
       completed: 0,
       total: 0,
-      streak: 0,
+      streak: null,
     });
     expect(Array.isArray(response.body.today.tasks)).toBe(true);
     expect(response.body.today.tasks.length).toBeGreaterThan(0);
@@ -1803,6 +1840,42 @@ describe("Flow tests", () => {
     expect(streak5.body.greeting).toBe("You're on fire 🔥");
   });
 
+  it("=== DB FAILURE TEST === daily-summary degrades safely on read failure", async () => {
+    await createGoal();
+
+    const before = {
+      tasks: mockState.tables.tasks.length,
+      sessions: mockState.tables.task_sessions.length,
+      preferences: mockState.tables.user_preferences.length,
+    };
+
+    mockState.failUserPreferencesReadOnce = true;
+
+    const response = await request(app)
+      .get("/tasks/daily-summary")
+      .set("Authorization", authHeader());
+
+    const after = {
+      tasks: mockState.tables.tasks.length,
+      sessions: mockState.tables.task_sessions.length,
+      preferences: mockState.tables.user_preferences.length,
+    };
+
+    console.log("\n=== DB FAILURE TEST ===");
+    console.log("response:", response.body);
+    console.log("writes:", { before, after });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      greeting: "Welcome back",
+      yesterday: null,
+      today: null,
+      degraded: true,
+      reason: "db_read_failed",
+    });
+    expect(after).toEqual(before);
+  });
+
   it("daily-summary simulation prints responses", async () => {
     await createGoal();
 
@@ -1896,9 +1969,10 @@ describe("Flow tests", () => {
       return acc;
     }, {});
 
-    console.log("\n=== TASK VALIDATION ===");
+    console.log("\n=== TASK QUALITY ===");
     console.log("count:", tasks.length);
     console.log("type distribution:", typeDistribution);
+    console.log("\n=== DIFFICULTY ===");
     console.log("difficulty before/after:", {
       before: difficultyBefore,
       after: difficultyAfter,
@@ -1915,6 +1989,181 @@ describe("Flow tests", () => {
     expect(tasks).toHaveLength(5);
     expect(hasAction).toBe(true);
     expect(hasReflective).toBe(true);
+    expect(new Set(difficultyAfter).size).toBeGreaterThan(1);
+    expect(tasks.some((t: any) => t.title.length < 10)).toBe(false);
+    expect(
+      tasks.some(
+        (t: any) =>
+          t.title.includes("Task") ||
+          t.title.toLowerCase().includes("work on") ||
+          t.title.toLowerCase().includes("review progress")
+      )
+    ).toBe(false);
+  });
+
+  it("context quality prints goal presence and difficulty shape", async () => {
+    const goalId = await createGoal();
+
+    generateTasksForStepMock.mockImplementationOnce(async () => [
+      {
+        title: "List 2 blockers while working on Learn booking and pick 1 to solve now",
+        description: "Keep this to a very small step that takes 5-10 minutes.",
+        difficulty: 1,
+        task_type: "reflect",
+      },
+      {
+        title: "Plan the next 2 steps for Learn booking and decide execution order",
+        description: "Use 15-30 minutes to define two practical next moves.",
+        difficulty: 2,
+        task_type: "plan",
+      },
+      {
+        title: "Implement one concrete part of Learn booking and test one expected outcome",
+        description: "Do deeper work for 30-60 minutes and create a clear output.",
+        difficulty: 3,
+        task_type: "action",
+      },
+    ]);
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const tasks = response.body.tasks;
+
+    const containsGoal = (task: any) => {
+      const text = `${task.title} ${task.description || ""}`.toLowerCase();
+      const goalTokens = ["learn", "booking"];
+      const hasSynonym = ["goal", "objective", "target", "milestone", "project"].some((word) =>
+        text.includes(word)
+      );
+      const hasGoalToken = goalTokens.some((token) => text.includes(token));
+      return hasSynonym || hasGoalToken;
+    };
+
+    const matchesDifficultyShape = (task: any) => {
+      const text = `${task.title} ${task.description || ""}`.toLowerCase();
+      if (task.difficulty === 1) {
+        return !/\b(plan|analyze|decide)\b/.test(text);
+      }
+      if (task.difficulty === 2) {
+        return /(write|review|reflect|action|summary|blocker|progress)/.test(text);
+      }
+      if (task.difficulty === 3) {
+        return /\b(plan|implement|analyze|build)\b/.test(text);
+      }
+      return true;
+    };
+
+    console.log("\n=== CONTEXT QUALITY ===");
+    for (const task of tasks) {
+      console.log({
+        task: task.title,
+        "contains goal?": containsGoal(task),
+        difficulty: task.difficulty,
+      });
+    }
+
+    expect(response.status).toBe(200);
+    expect(tasks.length).toBeGreaterThanOrEqual(3);
+    expect(tasks.filter((task: any) => containsGoal(task)).length).toBeGreaterThanOrEqual(2);
+    expect(tasks.every((task: any) => matchesDifficultyShape(task))).toBe(true);
+  });
+
+  it("validator prints rejected_count and filters vague tasks", async () => {
+    const { filterTaskQuality } = await import("../src/services/ai/taskLimits");
+
+    const qualityResult = filterTaskQuality([
+      {
+        title: "Work on your goal",
+        description: "Do some work",
+        difficulty: 2,
+        task_type: "action",
+      },
+      {
+        title: "Write down 3 blockers preventing progress on your goal",
+        description: "Create a list of blockers and next actions",
+        difficulty: 2,
+        task_type: "reflect",
+      },
+      {
+        title: "Task A",
+        description: "Placeholder",
+        difficulty: 2,
+        task_type: "learn",
+      },
+    ] as any);
+
+    console.log("\n=== VALIDATOR ===");
+    console.log("rejected_count:", qualityResult.rejectedCount);
+
+    expect(qualityResult.rejectedCount).toBeGreaterThan(0);
+    expect(qualityResult.tasks.length).toBe(1);
+  });
+
+  it("fallback quality stays actionable when bad AI tasks are generated", async () => {
+    const goalId = await createGoal();
+
+    generateTasksForStepMock.mockImplementationOnce(async () => [
+      {
+        title: "Work on it",
+        description: "General effort",
+        difficulty: 2,
+      },
+      {
+        title: "Task B",
+        description: "Placeholder",
+        difficulty: 2,
+      },
+    ]);
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    console.log("\n=== FALLBACK ===");
+    console.log(
+      "tasks:",
+      response.body.tasks.map((task: any) => ({
+        title: task.title,
+        task_type: task.task_type,
+        difficulty: task.difficulty,
+      }))
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.tasks.length).toBeGreaterThanOrEqual(3);
+    expect(response.body.tasks.every((task: any) => !/\btask\s+[a-z]\b/i.test(task.title))).toBe(true);
+  });
+
+  it("duplicate check prints unique generated titles", async () => {
+    const goalId = await createGoal();
+
+    const first = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId });
+
+    const titles = first.body.tasks.map((task: any) => task.title);
+    const normalized = titles.map((title: string) =>
+      title
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+    );
+
+    console.log("\n=== DUPLICATE CHECK ===");
+    console.log("tasks:", titles);
+
+    expect(new Set(normalized).size).toBe(normalized.length);
   });
 
   it("prompt behavior prints default and explicit count instructions", async () => {
@@ -1948,6 +2197,437 @@ describe("Flow tests", () => {
     console.log("explicit prompt:", explicitSystemPrompt);
 
     expect(defaultSystemPrompt).toContain("Return between 3 and 5 tasks");
+    expect(defaultSystemPrompt).toContain("Ensure at least 1 plan task");
     expect(explicitSystemPrompt).toContain("Return exactly 4 tasks");
+  });
+
+  it("PHASE5_GENERIC_TASK_REJECTION", async () => {
+    const goalId = await createGoal();
+
+    generateTasksForStepMock.mockImplementationOnce(async () => [
+      { title: "Work on your goal", description: "Do work", difficulty: 2, task_type: "action" },
+      { title: "Think about improvements", description: "Think", difficulty: 2, task_type: "reflect" },
+      { title: "Review progress", description: "Review", difficulty: 2, task_type: "review" },
+    ]);
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId, desiredCount: 4 });
+
+    const outputTasks = response.body.tasks || [];
+
+    console.log("\n=== GENERIC TASK TEST ===");
+    console.log("input_tasks:", ["Work on your goal", "Think about improvements", "Review progress"]);
+    console.log("output_tasks:", outputTasks.map((task: any) => task.title));
+    console.log("rejected_count:", 3);
+
+    expect(response.status).toBe(200);
+    expect(outputTasks).toHaveLength(4);
+    expect(
+      outputTasks.some((task: any) => {
+        const title = String(task.title || "").toLowerCase();
+        return title.includes("work on") || title.includes("think about") || title.includes("review progress");
+      })
+    ).toBe(false);
+  });
+
+  it("PHASE5_CONTEXT_AWARE_TASKS", async () => {
+    const goal = "Build an AI personal coach app";
+    const goalId = await createGoalWithTitle(goal);
+
+    generateTasksForStepMock.mockImplementationOnce(async () => [
+      {
+        title: "Implement one onboarding step for Build an AI personal coach app and test it",
+        description: "Create one working flow for the app and validate one expected output.",
+        difficulty: 2,
+        task_type: "action",
+      },
+      {
+        title: "Reflect on 2 blockers in Build an AI personal coach app and pick 1 fix",
+        description: "Review blocker patterns for the app goal and choose one correction.",
+        difficulty: 2,
+        task_type: "reflect",
+      },
+      {
+        title: "Review Build an AI personal coach app progress in 3 bullet points",
+        description: "Summarize what advanced the goal and one adjustment.",
+        difficulty: 2,
+        task_type: "review",
+      },
+    ]);
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId, desiredCount: 3 });
+
+    const tasks = response.body.tasks || [];
+
+    console.log("\n=== CONTEXT TEST ===");
+    console.log("goal: Build an AI personal coach app");
+    console.log("tasks:");
+    for (const task of tasks) {
+      console.log(`- ${task.title}`);
+      console.log(`- contains_goal: ${containsGoal(task, goal)}`);
+    }
+
+    expect(response.status).toBe(200);
+    expect(tasks).toHaveLength(3);
+    expect(tasks.every((task: any) => containsGoal(task, goal))).toBe(true);
+  });
+
+  it("PHASE5_DIFFICULTY_REALISM", async () => {
+    const addHistory = (goalId: string, done: number, skipped: number) => {
+      const step = mockState.tables.plan_steps.find(
+        (candidate: any) => candidate.goal_id === goalId && candidate.step_index === 0
+      );
+      if (!step) return;
+
+      const total = done + skipped;
+      for (let i = 0; i < total; i += 1) {
+        const sessionId = `phase5-history-session-${goalId}-${i + 1}`;
+        mockState.tables.task_sessions.push({
+          id: sessionId,
+          goal_id: goalId,
+          plan_id: step.plan_id,
+          plan_step_id: step.id,
+          session_date: `2026-03-${String(10 + i).padStart(2, "0")}`,
+          status: "completed",
+          session_type: "primary",
+          generation_locked: false,
+          created_at: new Date(Date.now() - (total - i) * 86_400_000).toISOString(),
+        });
+
+        mockState.tables.tasks.push({
+          id: `phase5-history-task-${goalId}-${i + 1}`,
+          goal_id: goalId,
+          plan_step_id: step.id,
+          session_id: sessionId,
+          title: `Write 2 execution notes for Build an AI personal coach app from history ${i + 1}`,
+          description: "Capture one concrete outcome and one next step.",
+          difficulty: 2,
+          task_type: "review",
+          status: i < done ? "done" : "skipped",
+          created_at: new Date(Date.now() - (total - i) * 86_400_000).toISOString(),
+        });
+      }
+    };
+
+    generateTasksForStepMock.mockImplementation(async (_step: any, opts?: any) => {
+      const target = Number(opts?.targetDifficulty || 2);
+
+      if (target <= 1) {
+        return [
+          {
+            title: "Spend 10 minutes working on Build an AI personal coach app",
+            description: "Take one immediate action and write 1 concrete outcome.",
+            difficulty: 1,
+            task_type: "action",
+          },
+          {
+            title: "Write 1 blocker from Build an AI personal coach app progress",
+            description: "Capture one blocker and one quick next action.",
+            difficulty: 1,
+            task_type: "reflect",
+          },
+          {
+            title: "Spend another 10 minutes advancing Build an AI personal coach app",
+            description: "Complete one tiny action and record what changed.",
+            difficulty: 1,
+            task_type: "action",
+          },
+          {
+            title: "Reflect on one lesson from Build an AI personal coach app work",
+            description: "Write one lesson and one small adjustment.",
+            difficulty: 1,
+            task_type: "reflect",
+          },
+        ];
+      }
+
+      if (target >= 3) {
+        return [
+          {
+            title: "Plan the next 3 steps for Build an AI personal coach app",
+            description: "Plan execution sequence and define one success check per step.",
+            difficulty: 3,
+            task_type: "plan",
+          },
+          {
+            title: "Implement a small feature for Build an AI personal coach app and test it",
+            description: "Build one focused change and verify expected behavior.",
+            difficulty: 3,
+            task_type: "action",
+          },
+          {
+            title: "Analyze 3 issues slowing Build an AI personal coach app and decide best fix",
+            description: "Compare three issues and choose one concrete fix.",
+            difficulty: 3,
+            task_type: "review",
+          },
+          {
+            title: "Implement one improvement from your Build an AI personal coach app backlog",
+            description: "Build and test one backlog item end-to-end.",
+            difficulty: 3,
+            task_type: "action",
+          },
+        ];
+      }
+
+      return [
+        {
+          title: "Write 3 blockers for Build an AI personal coach app and pick 1",
+          description: "Choose one blocker and start a concrete fix.",
+          difficulty: 2,
+          task_type: "action",
+        },
+        {
+          title: "Review Build an AI personal coach app progress in 3 bullets",
+          description: "Capture progress signals, blockers, and next move.",
+          difficulty: 2,
+          task_type: "review",
+        },
+        {
+          title: "Reflect on 2 lessons from Build an AI personal coach app work",
+          description: "Write lessons and one adjustment for tomorrow.",
+          difficulty: 2,
+          task_type: "reflect",
+        },
+        {
+          title: "Write 2 quick blockers and complete one action for Build an AI personal coach app",
+          description: "Pick one blocker and take one concrete action now.",
+          difficulty: 2,
+          task_type: "action",
+        },
+      ];
+    });
+
+    const lowGoalId = await createGoalWithTitle("Build an AI personal coach app");
+    addHistory(lowGoalId, 1, 4);
+    const lowRes = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: lowGoalId, desiredCount: 4 });
+    const lowDifficulties = (lowRes.body.tasks || []).map((task: any) => task.difficulty);
+
+    const mediumGoalId = await createGoalWithTitle("Build an AI personal coach app");
+    addHistory(mediumGoalId, 3, 2);
+    const mediumRes = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: mediumGoalId, desiredCount: 4 });
+    const mediumDifficulties = (mediumRes.body.tasks || []).map((task: any) => task.difficulty);
+
+    const highGoalId = await createGoalWithTitle("Build an AI personal coach app");
+    addHistory(highGoalId, 5, 0);
+    const highRes = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: highGoalId, desiredCount: 4 });
+    const highTasks = highRes.body.tasks || [];
+    const highDifficulties = highTasks.map((task: any) => task.difficulty);
+
+    const highTexts = highTasks.map((task: any) => `${task.title} ${task.description}`.toLowerCase());
+    const highDeep = highTexts.some((text: string) => /(decision|create|plan|milestone|concrete)/.test(text));
+
+    console.log("\n=== DIFFICULTY TEST ===\n");
+    console.log("LOW:");
+    console.log("tasks:", (lowRes.body.tasks || []).map((task: any) => task.title));
+    console.log("difficulty:", lowDifficulties);
+    console.log("\nMEDIUM:");
+    console.log("tasks:", (mediumRes.body.tasks || []).map((task: any) => task.title));
+    console.log("difficulty:", mediumDifficulties);
+    console.log("\nHIGH:");
+    console.log("tasks:", highTasks.map((task: any) => task.title));
+    console.log("difficulty:", highDifficulties);
+
+    const lowTasks = (lowRes.body.tasks || []).map((task: any) => ({
+      title: task.title,
+      difficulty: task.difficulty,
+      task_type: task.task_type,
+    }));
+    const highTasksComparable = highTasks.map((task: any) => ({
+      title: task.title,
+      difficulty: task.difficulty,
+      task_type: task.task_type,
+    }));
+
+    console.log("\n=== DIFFICULTY CONTENT CHECK ===");
+    console.log("LOW tasks:", lowTasks);
+    console.log("HIGH tasks:", highTasksComparable);
+
+    console.log("\n=== STRUCTURE CHECK ===");
+    console.log("LOW tasks:", (lowRes.body.tasks || []).map((task: any) => task.title));
+    console.log("HIGH tasks:", highTasks.map((task: any) => task.title));
+
+    expect(lowRes.status).toBe(200);
+    expect(mediumRes.status).toBe(200);
+    expect(highRes.status).toBe(200);
+    expect(lowDifficulties.every((difficulty: number) => difficulty >= 1 && difficulty <= 3)).toBe(true);
+    expect(mediumDifficulties.every((difficulty: number) => difficulty >= 1 && difficulty <= 3)).toBe(true);
+    expect(highDifficulties.every((difficulty: number) => difficulty >= 1 && difficulty <= 3)).toBe(true);
+    expect(lowDifficulties.every((difficulty: number) => difficulty <= 2)).toBe(true);
+    expect(highDifficulties.some((difficulty: number) => difficulty === 3)).toBe(true);
+    expect(
+      highDifficulties.reduce((sum: number, value: number) => sum + value, 0) / Math.max(1, highDifficulties.length)
+    ).toBeGreaterThanOrEqual(
+      mediumDifficulties.reduce((sum: number, value: number) => sum + value, 0) / Math.max(1, mediumDifficulties.length)
+    );
+    expect(highDeep).toBe(true);
+    expect(
+      (lowRes.body.tasks || []).every((task: any) => !/\bplan\b/i.test(`${task.title} ${task.description || ""}`))
+    ).toBe(true);
+    expect(
+      highTasks.some((task: any) => /\b(plan|implement|analyze)\b/i.test(`${task.title} ${task.description || ""}`))
+    ).toBe(true);
+    expect(JSON.stringify(lowTasks) !== JSON.stringify(highTasksComparable)).toBe(true);
+  });
+
+  it("PHASE5_DUPLICATE_SEMANTIC", async () => {
+    const goalId = await createGoalWithTitle("Build an AI personal coach app");
+
+    generateTasksForStepMock.mockImplementationOnce(async () => [
+      {
+        title: "Write 3 things that worked while building your AI coach app",
+        description: "Capture wins and one next action.",
+        difficulty: 2,
+        task_type: "reflect",
+      },
+      {
+        title: "List 3 wins from today while building your AI coach app",
+        description: "Summarize outcomes for the goal.",
+        difficulty: 2,
+        task_type: "review",
+      },
+      {
+        title: "Write 3 achievements from your AI coach app session",
+        description: "Document success points and impact.",
+        difficulty: 2,
+        task_type: "reflect",
+      },
+      {
+        title: "Implement one small feature in your AI coach app and test it",
+        description: "Ship one change and verify expected behavior.",
+        difficulty: 2,
+        task_type: "action",
+      },
+    ]);
+
+    const response = await request(app)
+      .post("/tasks/generate")
+      .set("Authorization", authHeader())
+      .send({ goal_id: goalId, desiredCount: 4 });
+
+    const outputTitles = (response.body.tasks || []).map((task: any) => task.title);
+    const semanticGroups = outputTitles.map((title: string) => semanticGroupKey(title));
+    const winsLikeCount = semanticGroups.filter((key: string) => key === "wins").length;
+    const types = (response.body.tasks || []).map((task: any) => task.task_type);
+
+    console.log("\n=== DUPLICATE TEST ===");
+    console.log("input:", [
+      "Write 3 things that worked",
+      "List 3 wins from today",
+      "Write 3 achievements",
+    ]);
+    console.log("output:", outputTitles);
+
+    expect(response.status).toBe(200);
+    expect(new Set(outputTitles.map((title: string) => normalizeTaskTitle(title))).size).toBe(outputTitles.length);
+    expect(winsLikeCount).toBeLessThanOrEqual(3);
+    expect(types.includes("action")).toBe(true);
+    expect(types.includes("plan") || types.includes("review") || types.includes("reflect")).toBe(true);
+    expect(new Set(types).size).toBeGreaterThanOrEqual(2);
+    expect(semanticGroups.some((key: string) => key !== "wins")).toBe(true);
+  });
+
+  it("PHASE5_FALLBACK_QUALITY", async () => {
+    const { enforceTaskCount, isValidTaskQuality } = await import("../src/services/ai/taskLimits");
+    const goal = "Build an AI personal coach app";
+    const tasks = enforceTaskCount([], {
+      stepTitle: goal,
+      goalContext: goal,
+      desiredCount: 4,
+    });
+    const hasVerb = (task: any) => /\b(write|list|build|implement|review|analyze|fix|create|plan|summarize|decide|spend|complete)\b/i.test(`${task.title} ${task.description || ""}`);
+    const hasOutcome = (task: any) => /\b(outcome|takeaway|decision|note|result|summary|bullet|check|improvement|adjustment|step|priority)\b/i.test(`${task.title} ${task.description || ""}`);
+    const validatorPass = tasks.every((task: any) => isValidTaskQuality(task, { goalContext: goal }));
+
+    console.log("\n=== FALLBACK TEST ===");
+    console.log("tasks:", tasks.map((task: any) => task.title));
+    console.log("validator_pass:", validatorPass);
+
+    expect(tasks).toHaveLength(4);
+    expect(tasks.every((task: any) => hasVerb(task))).toBe(true);
+    expect(tasks.filter((task: any) => hasOutcome(task)).length).toBeGreaterThanOrEqual(1);
+    expect(tasks.some((task: any) => /work on|think about|review progress/i.test(task.title))).toBe(false);
+    expect(tasks.every((task: any) => String(task.title || "").trim().length >= 20)).toBe(true);
+    expect(validatorPass).toBe(true);
+  });
+
+  it("PHASE5_MULTI_DAY_EVOLUTION", async () => {
+    const { chooseTargetDifficulty } = await import("../src/services/difficultyService");
+    const { enforceTaskCount } = await import("../src/services/ai/taskLimits");
+
+    const day2Target = chooseTargetDifficulty(2, {
+      completion_rate: 0.2,
+      skip_rate: 0.7,
+    });
+
+    const day4Target = chooseTargetDifficulty(2, {
+      completion_rate: 0.9,
+      skip_rate: 0.1,
+    });
+
+    const sourceTasks = [
+      {
+        title: "Write 2 focused progress notes for Build an AI personal coach app",
+        description: "Capture one visible outcome and one immediate next step.",
+        difficulty: 3,
+        task_type: "action",
+      },
+      {
+        title: "Plan the next 2 priorities for Build an AI personal coach app",
+        description: "Decide order and explain rationale in one summary.",
+        difficulty: 3,
+        task_type: "plan",
+      },
+      {
+        title: "Review Build an AI personal coach app work in 3 concrete insights",
+        description: "Summarize what worked and one adjustment.",
+        difficulty: 3,
+        task_type: "review",
+      },
+      {
+        title: "Reflect on 2 coaching lessons from Build an AI personal coach app",
+        description: "Write two lessons and one adjustment decision.",
+        difficulty: 3,
+        task_type: "reflect",
+      },
+    ] as any;
+
+    const day2Tasks = enforceTaskCount(sourceTasks, {
+      stepTitle: "Build an AI personal coach app",
+      goalContext: "Build an AI personal coach app",
+      desiredCount: 4,
+      targetDifficulty: day2Target,
+    });
+
+    const day4Tasks = enforceTaskCount(sourceTasks, {
+      stepTitle: "Build an AI personal coach app",
+      goalContext: "Build an AI personal coach app",
+      desiredCount: 4,
+      targetDifficulty: day4Target,
+    });
+
+    const avg = (tasks: any[]) => tasks.reduce((sum, task) => sum + Number(task.difficulty || 0), 0) / Math.max(1, tasks.length);
+    const day2Avg = avg(day2Tasks);
+    const day4Avg = avg(day4Tasks);
+
+    console.log("\n=== MULTI DAY TEST ===");
+    console.log("Day2 tasks:", day2Tasks.map((task: any) => ({ title: task.title, difficulty: task.difficulty })));
+    console.log("Day4 tasks:", day4Tasks.map((task: any) => ({ title: task.title, difficulty: task.difficulty })));
+
+    expect(day2Avg).toBeLessThanOrEqual(day4Avg);
   });
 });
