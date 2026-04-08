@@ -269,7 +269,11 @@ function fillToMinimumTaskCount(
 
 export function enforceTaskCount(
   input: unknown,
-  options?: { stepTitle?: string; blockedNormalizedTitles?: Set<string> | string[] }
+  options?: {
+    stepTitle?: string;
+    blockedNormalizedTitles?: Set<string> | string[];
+    desiredCount?: number;
+  }
 ): GeneratedTask[] {
   const bounded = sanitizeGeneratedTasks(input).slice(0, MAX_TASKS);
 
@@ -285,6 +289,12 @@ export function enforceTaskCount(
     blockedNormalizedTitles: options?.blockedNormalizedTitles,
   });
 
+  const requestedCount = Number(options?.desiredCount);
+  if (Number.isFinite(requestedCount)) {
+    const clampedDesired = Math.max(MIN_TASKS, Math.min(MAX_TASKS, Math.round(requestedCount)));
+    return corrected.slice(0, clampedDesired);
+  }
+
   return corrected.slice(0, MAX_TASKS);
 }
 
@@ -294,4 +304,151 @@ export function enforceTargetDifficulty(input: GeneratedTask[], targetDifficulty
     ...task,
     difficulty: clampedTarget,
   }));
+}
+
+function getTopSkippedCategories(skipPattern: Record<string, number>, limit = 2) {
+  return Object.entries(skipPattern)
+    .filter(([category, count]) => category !== "general" && count > 0)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit)
+    .map(([category]) => category as TaskType);
+}
+
+function pickReplacementType(excluded: Set<string>, fallback: TaskType) {
+  const candidates: TaskType[] = ["action", "learn", "reflect", "review"];
+  const safe = candidates.find((candidate) => !excluded.has(candidate));
+  return safe ?? fallback;
+}
+
+function normalizePreferenceDifficulty(value: unknown) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric <= 1) return 2;
+  if (numeric >= 3) return 4;
+  return 3;
+}
+
+function hasValidCount(tasks: GeneratedTask[], expectedCount?: number) {
+  const clampedExpected =
+    typeof expectedCount === "number" && Number.isFinite(expectedCount)
+      ? Math.max(MIN_TASKS, Math.min(MAX_TASKS, Math.round(expectedCount)))
+      : null;
+
+  if (clampedExpected !== null) {
+    return tasks.length === clampedExpected;
+  }
+
+  return tasks.length >= MIN_TASKS && tasks.length <= MAX_TASKS;
+}
+
+function hasRequiredTypes(tasks: GeneratedTask[]) {
+  const hasAction = tasks.some((task) => task.task_type === "action");
+  const hasReflective = tasks.some(
+    (task) => task.task_type === "reflect" || task.task_type === "review"
+  );
+  return hasAction && hasReflective;
+}
+
+function hasDiversity(tasks: GeneratedTask[]) {
+  if (!tasks.length) return false;
+  const distribution = getTaskTypeDistribution(tasks);
+  const maxAllowedPerType = Math.ceil(tasks.length * 0.8);
+  return Object.values(distribution).every((count) => count <= maxAllowedPerType);
+}
+
+function respectsDifficulty(
+  tasks: GeneratedTask[],
+  options?: { preferredDifficulty?: unknown; targetDifficulty?: number }
+) {
+  const targetDifficulty = options?.targetDifficulty;
+  if (typeof targetDifficulty === "number" && Number.isFinite(targetDifficulty)) {
+    const clamped = Math.max(1, Math.min(5, Math.round(targetDifficulty)));
+    return tasks.every((task) => task.difficulty === clamped);
+  }
+
+  const preferenceTarget = normalizePreferenceDifficulty(options?.preferredDifficulty);
+  if (preferenceTarget === null) {
+    return true;
+  }
+
+  return tasks.every((task) => Math.abs(task.difficulty - preferenceTarget) <= 2);
+}
+
+export function isValidFinalTasks(
+  tasks: GeneratedTask[],
+  options?: {
+    expectedCount?: number;
+    preferredDifficulty?: unknown;
+    targetDifficulty?: number;
+  }
+) {
+  return (
+    hasValidCount(tasks, options?.expectedCount) &&
+    hasRequiredTypes(tasks) &&
+    hasDiversity(tasks) &&
+    respectsDifficulty(tasks, {
+      preferredDifficulty: options?.preferredDifficulty,
+      targetDifficulty: options?.targetDifficulty,
+    })
+  );
+}
+
+export function enforceBehavioralPreferences(
+  input: GeneratedTask[],
+  options?: {
+    preferredDifficulty?: unknown;
+    skipPattern?: Record<string, number> | null;
+    originalTasks?: GeneratedTask[];
+  }
+) {
+  if (!input.length) return [];
+  const skipPattern = options?.skipPattern || {};
+  const highSkippedCategories = new Set(getTopSkippedCategories(skipPattern, 2));
+
+  return input.map((task, index) => {
+    const fallbackType = options?.originalTasks?.[index]?.task_type || task.task_type;
+    const nextType = highSkippedCategories.has(task.task_type)
+      ? pickReplacementType(highSkippedCategories, fallbackType)
+      : task.task_type;
+
+    return {
+      ...task,
+      task_type: nextType,
+      // Keep route-calibrated difficulty (bonus/high-performance logic) intact.
+      difficulty: task.difficulty,
+    };
+  });
+}
+
+export function validateBehavioralPreferences(
+  originalTasks: GeneratedTask[],
+  candidateTasks: GeneratedTask[],
+  options?: {
+    expectedCount?: number;
+    targetDifficulty?: number;
+    preferredDifficulty?: unknown;
+    skipPattern?: Record<string, number> | null;
+  }
+) {
+  const expectedCount = options?.expectedCount ?? originalTasks.length;
+
+  if (!isValidFinalTasks(candidateTasks, {
+    expectedCount,
+    preferredDifficulty: options?.preferredDifficulty,
+    targetDifficulty: options?.targetDifficulty,
+  })) {
+    return false;
+  }
+
+  const skipPattern = options?.skipPattern || {};
+  const highSkippedCategories = getTopSkippedCategories(skipPattern, 2);
+  if (!highSkippedCategories.length) {
+    return true;
+  }
+
+  return highSkippedCategories.every((category) => {
+    const originalCount = originalTasks.filter((task) => task.task_type === category).length;
+    const candidateCount = candidateTasks.filter((task) => task.task_type === category).length;
+    return candidateCount <= originalCount;
+  });
 }

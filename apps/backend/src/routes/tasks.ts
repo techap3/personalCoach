@@ -4,11 +4,15 @@ import { getSupabaseClient } from "../db/supabase";
 import { generateTasksForStep } from "../services/ai/taskGenerator";
 import {
   enforceTaskCount,
+  enforceTaskTypeMix,
+  enforceBehavioralPreferences,
   enforceTargetDifficulty,
   getTaskTypeDistribution,
+  isValidFinalTasks,
   MIN_TASKS,
   MAX_TASKS,
   sanitizeGeneratedTasks,
+  validateBehavioralPreferences,
 } from "../services/ai/taskLimits";
 import {
   filterDuplicateTasks,
@@ -18,7 +22,7 @@ import { generateAdaptedTasks } from "../services/ai/adaptTasks";
 import { computeMetrics } from "../services/metrics";
 import { runProgressionEngine } from "../services/progressionEngine";
 import {
-  updateUserMemory,
+  updateUserPreferences,
   getUserMemory,
 } from "../services/memory/userMemory";
 import { getTargetDifficulty } from "../services/difficultyService";
@@ -638,6 +642,8 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     currentDifficulty: activeStep.difficulty,
   });
 
+  const userMemory = await getUserMemory(req.token!, userId);
+
   const effectiveTargetDifficulty =
     resolveSessionType(workingSession.session_type) === "bonus"
       ? Math.max(1, difficultyResult.targetDifficulty - 1)
@@ -671,6 +677,7 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     const aiTasks = await generateTasksForStep(activeStep, {
       previousTasks: recentTaskTitles,
       targetDifficulty: effectiveTargetDifficulty,
+      userMemory,
     });
 
     rawTaskCount = Array.isArray(aiTasks) ? aiTasks.length : 0;
@@ -689,6 +696,46 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
       generatedTasks,
       effectiveTargetDifficulty
     );
+
+    const behaviorAdjustedTasks = enforceBehavioralPreferences(difficultyBalancedTasks, {
+      preferredDifficulty: userMemory?.preferred_difficulty,
+      skipPattern: userMemory?.skip_pattern,
+      originalTasks: difficultyBalancedTasks,
+    });
+
+    const postBehaviorCount = enforceTaskCount(behaviorAdjustedTasks, {
+      stepTitle: activeStep.title,
+      blockedNormalizedTitles: recentNormalizedTitles,
+      desiredCount: difficultyBalancedTasks.length,
+    });
+    const postBehaviorTypeMix = enforceTaskTypeMix(postBehaviorCount, {
+      blockedNormalizedTitles: recentNormalizedTitles,
+    });
+    const postBehaviorFinal = enforceTargetDifficulty(
+      postBehaviorTypeMix,
+      effectiveTargetDifficulty
+    );
+
+    const isFinalValid = isValidFinalTasks(postBehaviorFinal, {
+      expectedCount: difficultyBalancedTasks.length,
+      preferredDifficulty: userMemory?.preferred_difficulty,
+      targetDifficulty: effectiveTargetDifficulty,
+    });
+
+    const isBehaviorallyValid = validateBehavioralPreferences(
+      difficultyBalancedTasks,
+      postBehaviorFinal,
+      {
+        expectedCount: difficultyBalancedTasks.length,
+        targetDifficulty: effectiveTargetDifficulty,
+        preferredDifficulty: userMemory?.preferred_difficulty,
+        skipPattern: userMemory?.skip_pattern,
+      }
+    );
+
+    difficultyBalancedTasks = isBehaviorallyValid && isFinalValid
+      ? postBehaviorFinal
+      : difficultyBalancedTasks;
 
     typeDistribution = getTaskTypeDistribution(difficultyBalancedTasks);
   } catch (generationError: any) {
@@ -859,6 +906,21 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
   const task = Array.isArray(atomicUpdateRows)
     ? atomicUpdateRows[0]
     : atomicUpdateRows;
+
+  const userId = req.user?.id;
+  if (userId && (status === "done" || status === "skipped")) {
+    void updateUserPreferences(req.token!, userId).catch((error: any) => {
+      reqLog.warn(
+        {
+          event: "memory.refresh.failed",
+          user_id: userId,
+          task_id,
+          error: error?.message,
+        },
+        "Failed to refresh user preferences after task update"
+      );
+    });
+  }
 
   if (!task) {
     const { data: existingTask } = await supabase
@@ -1212,10 +1274,7 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
 
   const metrics = computeMetrics(allGoalTasks || []);
 
-  await updateUserMemory(req.token!, userId, {
-    ...metrics,
-    total: (allGoalTasks || []).length,
-  });
+  await updateUserPreferences(req.token!, userId, { force: true });
 
   const memory = await getUserMemory(req.token!, userId);
 
@@ -1234,8 +1293,74 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
       memory,
     });
 
-    const adapted = enforceTaskCount(aiResult.updated_tasks || sourceTasks, {
+    const sourceBaseline = sanitizeGeneratedTasks(sourceTasks);
+    const desiredCount = Math.max(
+      MIN_TASKS,
+      Math.min(MAX_TASKS, sourceBaseline.length || MIN_TASKS)
+    );
+    const sourceDifficulty = Math.max(
+      1,
+      Math.min(5, Math.round(Number(sourceBaseline[0]?.difficulty ?? 2)))
+    );
+
+    const aiCandidate = sanitizeGeneratedTasks(aiResult.updated_tasks || sourceTasks);
+    let candidate = enforceTaskCount(aiCandidate, {
       stepTitle: activeStep.title,
+      desiredCount,
+    });
+    candidate = enforceTaskTypeMix(candidate);
+    candidate = enforceTargetDifficulty(candidate, sourceDifficulty);
+
+    const behaviorAdjusted = enforceBehavioralPreferences(candidate, {
+      preferredDifficulty: memory?.preferred_difficulty,
+      skipPattern: memory?.skip_pattern,
+      originalTasks: sourceBaseline,
+    });
+
+    const postBehaviorCount = enforceTaskCount(behaviorAdjusted, {
+      stepTitle: activeStep.title,
+      desiredCount,
+    });
+    const postBehaviorTypeMix = enforceTaskTypeMix(postBehaviorCount);
+    const postBehaviorFinal = enforceTargetDifficulty(
+      postBehaviorTypeMix,
+      sourceDifficulty
+    );
+
+    candidate = enforceTaskCount(postBehaviorFinal, {
+      stepTitle: activeStep.title,
+      desiredCount,
+    });
+
+    const isCandidateValid = validateBehavioralPreferences(
+      sourceBaseline,
+      candidate,
+      {
+        expectedCount: desiredCount,
+        targetDifficulty: sourceDifficulty,
+        preferredDifficulty: memory?.preferred_difficulty,
+        skipPattern: memory?.skip_pattern,
+      }
+    );
+
+    const isFinalValid = isValidFinalTasks(candidate, {
+      expectedCount: desiredCount,
+      preferredDifficulty: memory?.preferred_difficulty,
+      targetDifficulty: sourceDifficulty,
+    });
+
+    if (!isCandidateValid || !isFinalValid) {
+      candidate = enforceTaskCount(sourceBaseline, {
+        stepTitle: activeStep.title,
+        desiredCount,
+      });
+      candidate = enforceTaskTypeMix(candidate);
+      candidate = enforceTargetDifficulty(candidate, sourceDifficulty);
+    }
+
+    const adapted = enforceTaskCount(candidate, {
+      stepTitle: activeStep.title,
+      desiredCount,
     });
 
     const adaptedTypeDistribution = getTaskTypeDistribution(adapted);

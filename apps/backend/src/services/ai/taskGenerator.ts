@@ -74,6 +74,7 @@ export async function generateTasksForStep(step: {
 }, options?: {
   previousTasks?: string[];
   targetDifficulty?: number;
+  userMemory?: any;
 }): Promise<GeneratedTask[]> {
   const client = getAIClient();
   const model = process.env.AI_MODEL || "meta-llama/llama-3-8b-instruct";
@@ -85,7 +86,8 @@ export async function generateTasksForStep(step: {
         ...step,
         difficulty: options?.targetDifficulty ?? step.difficulty,
       },
-      options?.previousTasks || []
+      options?.previousTasks || [],
+      options?.userMemory
     ),
   });
 

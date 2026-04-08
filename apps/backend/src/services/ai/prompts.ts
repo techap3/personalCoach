@@ -1,6 +1,37 @@
 import { ChatCompletionMessageParam } from "openai/resources/chat";
 import { PlanResponse } from "./parser";
 
+function getTopSkipCategories(memory: any, limit = 2) {
+  const pattern = (memory?.skip_pattern || {}) as Record<string, number>;
+  return Object.entries(pattern)
+    .filter(([category, count]) => category !== "general" && Number(count) > 0)
+    .sort((left, right) => Number(right[1]) - Number(left[1]))
+    .slice(0, limit)
+    .map(([category]) => category);
+}
+
+function getConsistencyLabel(score: unknown) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return "medium";
+  if (value < 0.34) return "low";
+  if (value < 0.67) return "medium";
+  return "high";
+}
+
+function buildTendencySummary(memory: any) {
+  const completionRate = Number(memory?.avg_completion_rate ?? 0);
+  const preferredDifficulty = Number(memory?.preferred_difficulty ?? 2);
+  const topSkipCategories = getTopSkipCategories(memory, 2);
+  const consistency = getConsistencyLabel(memory?.consistency_score);
+
+  return [
+    `- Avg completion rate: ${(completionRate * 100).toFixed(0)}%`,
+    `- Preferred difficulty: ${preferredDifficulty}`,
+    `- High skip categories: ${topSkipCategories.length ? topSkipCategories.join(", ") : "none"}`,
+    `- Consistency: ${consistency}`,
+  ].join("\n");
+}
+
 export function buildPlanPrompt(goal: string): ChatCompletionMessageParam[] {
   return [
     {
@@ -76,10 +107,12 @@ export function buildStepTaskPrompt(step: {
   title: string;
   description: string;
   difficulty: number;
-}, previousTasks: string[] = []): ChatCompletionMessageParam[] {
+}, previousTasks: string[] = [], memory?: any): ChatCompletionMessageParam[] {
   const priorTasksContext = previousTasks.length
     ? previousTasks.map((task) => `- ${task}`).join("\n")
     : "- none";
+
+  const tendencySummary = buildTendencySummary(memory);
 
   return [
     {
@@ -118,7 +151,7 @@ Return ONLY JSON:
     },
     {
       role: "user",
-      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
+      content: `Step: ${step.title}\nDescription: ${step.description}\nTarget difficulty: ${step.difficulty} (1-5 scale)\n\nUser tendencies:\n${tendencySummary}\n\nPrevious tasks to avoid repeating:\n${priorTasksContext}`,
     },
   ];
 }
@@ -277,8 +310,8 @@ FORMAT:
     {
       role: "user" as const,
       content: `
-User Memory:
-${JSON.stringify(memory)}
+User tendencies:
+${buildTendencySummary(memory)}
 
 Metrics:
 ${JSON.stringify(metrics)}
