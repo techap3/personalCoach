@@ -636,13 +636,18 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  const userMemory = await getUserMemory(req.token!, userId);
+
   const difficultyResult = await getTargetDifficulty(supabase, userId, goalId, {
     lookbackSessions: RECENT_SESSION_LOOKBACK,
     defaultDifficulty: 2,
     currentDifficulty: activeStep.difficulty,
+    preferredDifficulty:
+      typeof userMemory?.preferred_difficulty === "number" &&
+      Number.isFinite(userMemory.preferred_difficulty)
+        ? userMemory.preferred_difficulty
+        : undefined,
   });
-
-  const userMemory = await getUserMemory(req.token!, userId);
 
   const effectiveTargetDifficulty =
     resolveSessionType(workingSession.session_type) === "bonus"
@@ -700,6 +705,8 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     const behaviorAdjustedTasks = enforceBehavioralPreferences(difficultyBalancedTasks, {
       preferredDifficulty: userMemory?.preferred_difficulty,
       skipPattern: userMemory?.skip_pattern,
+      consistencyScore: userMemory?.consistency_score,
+      completionRate: userMemory?.avg_completion_rate,
       originalTasks: difficultyBalancedTasks,
     });
 
@@ -1304,6 +1311,8 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
     const behaviorAdjusted = enforceBehavioralPreferences(candidate, {
       preferredDifficulty: memory?.preferred_difficulty,
       skipPattern: memory?.skip_pattern,
+      consistencyScore: memory?.consistency_score,
+      completionRate: memory?.avg_completion_rate,
       originalTasks: sourceBaseline,
     });
 

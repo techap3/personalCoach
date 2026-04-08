@@ -5,6 +5,17 @@ export const MIN_TASKS = 3;
 export const MAX_TASKS = 5;
 
 const TASK_TYPES: TaskType[] = ["action", "learn", "reflect", "review"];
+const SKIP_THRESHOLD = 3;
+const LOW_CONSISTENCY_THRESHOLD = 0.34;
+const HIGH_CONSISTENCY_THRESHOLD = 0.67;
+const MIXED_COMPLETION_MIN = 0.3;
+const MIXED_COMPLETION_MAX = 0.7;
+const CATEGORY_FALLBACK_MAP: Record<string, string> = {
+  running: "walking",
+  gym: "home workout",
+  reading: "short article",
+  coding: "small coding task",
+};
 
 const FALLBACK_BY_TYPE: Record<TaskType, { title: string; description: string; difficulty: number }> = {
   action: {
@@ -338,13 +349,105 @@ function getTopSkippedCategories(skipPattern: Record<string, number>, limit = 2)
     .filter(([category, count]) => category !== "general" && count > 0)
     .sort((left, right) => right[1] - left[1])
     .slice(0, limit)
-    .map(([category]) => category as TaskType);
+    .map(([category]) => category);
+}
+
+function isKnownTaskType(value: string): value is TaskType {
+  return TASK_TYPES.includes(value as TaskType);
 }
 
 function pickReplacementType(excluded: Set<string>, fallback: TaskType) {
   const candidates: TaskType[] = ["action", "learn", "reflect", "review"];
   const safe = candidates.find((candidate) => !excluded.has(candidate));
   return safe ?? fallback;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function replaceCategoryWithFallback(text: string, category: string, fallback: string) {
+  const escaped = escapeRegExp(category);
+  const matcher = new RegExp(`\\b${escaped}\\b`, "gi");
+  return text.replace(matcher, fallback);
+}
+
+function safeTextMatch(task: GeneratedTask, category: string) {
+  const escaped = escapeRegExp(category.toLowerCase());
+  const matcher = new RegExp(`\\b${escaped}\\b`, "i");
+  return matcher.test(`${task.title} ${task.description}`.toLowerCase());
+}
+
+function applySkipFallbackText(task: GeneratedTask, skipPattern: Record<string, number>) {
+  let title = task.title;
+  let description = task.description;
+  let replaced = false;
+
+  for (const [category, count] of Object.entries(skipPattern)) {
+    const fallback = CATEGORY_FALLBACK_MAP[category];
+    if (!fallback || count < SKIP_THRESHOLD) continue;
+
+    const nextTitle = replaceCategoryWithFallback(title, category, fallback);
+    const nextDescription = replaceCategoryWithFallback(description, category, fallback);
+
+    if (nextTitle !== title || nextDescription !== description) {
+      title = nextTitle;
+      description = nextDescription;
+      replaced = true;
+    }
+  }
+
+  if (replaced && !description.includes("Low-friction alternative:")) {
+    description = `${description} Low-friction alternative: keep it manageable and complete the smallest useful version.`;
+  }
+
+  return {
+    title,
+    description,
+  };
+}
+
+function applyEffortScaling(
+  task: GeneratedTask,
+  options?: { consistencyScore?: unknown; completionRate?: unknown }
+) {
+  const consistency = Number(options?.consistencyScore);
+  const completionRate = Number(options?.completionRate);
+
+  if (Number.isFinite(consistency) && consistency < LOW_CONSISTENCY_THRESHOLD) {
+    if (!task.description.includes("Keep effort small:")) {
+      return {
+        ...task,
+        description: `${task.description} Keep effort small: aim for 10-15 focused minutes.`,
+      };
+    }
+    return task;
+  }
+
+  if (Number.isFinite(consistency) && consistency > HIGH_CONSISTENCY_THRESHOLD) {
+    if (!task.description.includes("Stretch: add")) {
+      return {
+        ...task,
+        description: `${task.description} Stretch: add one extra focused pass if energy is high.`,
+      };
+    }
+    return task;
+  }
+
+  if (
+    Number.isFinite(completionRate) &&
+    completionRate >= MIXED_COMPLETION_MIN &&
+    completionRate <= MIXED_COMPLETION_MAX
+  ) {
+    if (!task.description.includes("Keep scope tight:")) {
+      return {
+        ...task,
+        description: `${task.description} Keep scope tight: one concrete deliverable only.`,
+      };
+    }
+  }
+
+  return task;
 }
 
 function normalizePreferenceDifficulty(value: unknown) {
@@ -425,24 +528,35 @@ export function enforceBehavioralPreferences(
   options?: {
     preferredDifficulty?: unknown;
     skipPattern?: Record<string, number> | null;
+    consistencyScore?: unknown;
+    completionRate?: unknown;
     originalTasks?: GeneratedTask[];
   }
 ) {
   if (!input.length) return [];
   const skipPattern = options?.skipPattern || {};
-  const highSkippedCategories = new Set(getTopSkippedCategories(skipPattern, 2));
 
-  return input.map((task, index) => {
-    const fallbackType = options?.originalTasks?.[index]?.task_type || task.task_type;
-    const nextType = highSkippedCategories.has(task.task_type)
-      ? pickReplacementType(highSkippedCategories, fallbackType)
-      : task.task_type;
+  return input.map((task) => {
+
+    const withSkipFallback = applySkipFallbackText(task, skipPattern);
+    const effortScaled = applyEffortScaling(
+      {
+        ...task,
+        title: withSkipFallback.title,
+        description: withSkipFallback.description,
+      },
+      {
+        consistencyScore: options?.consistencyScore,
+        completionRate: options?.completionRate,
+      }
+    );
 
     return {
-      ...task,
-      task_type: nextType,
+      ...effortScaled,
+      // Preserve semantic task type; only adapt wording/effort.
+      task_type: task.task_type,
       // Keep route-calibrated difficulty (bonus/high-performance logic) intact.
-      difficulty: task.difficulty,
+      difficulty: effortScaled.difficulty,
     };
   });
 }
@@ -474,8 +588,16 @@ export function validateBehavioralPreferences(
   }
 
   return highSkippedCategories.every((category) => {
-    const originalCount = originalTasks.filter((task) => task.task_type === category).length;
-    const candidateCount = candidateTasks.filter((task) => task.task_type === category).length;
+    const hasCategory = (task: GeneratedTask) => {
+      if (isKnownTaskType(category)) {
+        return task.task_type === category;
+      }
+
+      return safeTextMatch(task, category);
+    };
+
+    const originalCount = originalTasks.filter(hasCategory).length;
+    const candidateCount = candidateTasks.filter(hasCategory).length;
     return candidateCount <= originalCount;
   });
 }

@@ -4,6 +4,8 @@ const DEFAULT_DIFFICULTY = 2;
 const MIN_DIFFICULTY = 1;
 const MAX_DIFFICULTY = 5;
 const DEFAULT_LOOKBACK = 5;
+const MIN_PREFERENCE_DIFFICULTY = 1;
+const MAX_PREFERENCE_DIFFICULTY = 3;
 
 type SessionRow = { id: string };
 type TaskStatus = SharedTaskStatus | "archived" | string;
@@ -56,6 +58,42 @@ export function chooseTargetDifficulty(
   return base;
 }
 
+function clampPreferenceDifficulty(value: number) {
+  if (!Number.isFinite(value)) return 2;
+  if (value < MIN_PREFERENCE_DIFFICULTY) return MIN_PREFERENCE_DIFFICULTY;
+  if (value > MAX_PREFERENCE_DIFFICULTY) return MAX_PREFERENCE_DIFFICULTY;
+  return Math.round(value);
+}
+
+function mapDifficultyToPreference(value: number) {
+  const rounded = clampDifficulty(value);
+  if (rounded <= 2) return 1;
+  if (rounded >= 4) return 3;
+  return 2;
+}
+
+function mapPreferenceToDifficulty(value: number) {
+  const clamped = clampPreferenceDifficulty(value);
+  if (clamped <= 1) return 2;
+  if (clamped >= 3) return 4;
+  return 3;
+}
+
+function inferPreferenceFromMetrics(
+  currentPreference: number,
+  metrics: Pick<DifficultyMetrics, "completion_rate" | "skip_rate">
+) {
+  const base = clampPreferenceDifficulty(currentPreference);
+  if (metrics.skip_rate > 0.5) return clampPreferenceDifficulty(base - 1);
+  if (metrics.completion_rate > 0.8) return clampPreferenceDifficulty(base + 1);
+  return base;
+}
+
+function smoothPreferenceDifficulty(previousPreference: number, inferredPreference: number) {
+  const smoothed = Math.round(0.7 * previousPreference + 0.3 * inferredPreference);
+  return clampPreferenceDifficulty(smoothed);
+}
+
 async function getCurrentStepDifficulty(
   supabase: any,
   goalId: string,
@@ -85,6 +123,7 @@ export async function getTargetDifficulty(
     lookbackSessions?: number;
     defaultDifficulty?: number;
     currentDifficulty?: number;
+    preferredDifficulty?: number;
   }
 ) {
   const lookbackSessions = options?.lookbackSessions ?? DEFAULT_LOOKBACK;
@@ -94,6 +133,35 @@ export async function getTargetDifficulty(
     options?.currentDifficulty == null
       ? await getCurrentStepDifficulty(supabase, goalId, fallbackDifficulty)
       : clampDifficulty(options.currentDifficulty);
+
+  let preferenceRow: { preferred_difficulty?: number | null } | null = null;
+  if (typeof options?.preferredDifficulty === "number" && Number.isFinite(options.preferredDifficulty)) {
+    preferenceRow = { preferred_difficulty: options.preferredDifficulty };
+  } else {
+    try {
+      const preferenceQuery = await supabase
+        .from("user_preferences")
+        .select("preferred_difficulty")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (preferenceQuery?.error) {
+        console.warn("[difficulty] Failed to read user preference, falling back", {
+          user_id: userId,
+          error: preferenceQuery.error.message,
+        });
+      } else {
+        preferenceRow = (preferenceQuery?.data ?? null) as {
+          preferred_difficulty?: number | null;
+        } | null;
+      }
+    } catch (error: any) {
+      console.warn("[difficulty] Failed to read user preference, falling back", {
+        user_id: userId,
+        error: error?.message,
+      });
+    }
+  }
 
   const { data: goal } = await supabase
     .from("goals")
@@ -171,13 +239,33 @@ export async function getTargetDifficulty(
     };
   }
 
-  const targetDifficulty = chooseTargetDifficulty(currentDifficulty, metrics);
+  const rawPreference = preferenceRow?.preferred_difficulty;
+  const hasStoredPreference =
+    typeof rawPreference === "number" &&
+    Number.isFinite(rawPreference);
+
+  const previousPreference = hasStoredPreference
+    ? rawPreference
+    : null;
+
+  const basePreference = hasStoredPreference
+    ? clampPreferenceDifficulty(previousPreference)
+    : mapDifficultyToPreference(currentDifficulty);
+  const inferredPreference = inferPreferenceFromMetrics(basePreference, metrics);
+  const smoothedPreference = smoothPreferenceDifficulty(basePreference, inferredPreference);
+  const targetDifficulty = hasStoredPreference
+    ? mapPreferenceToDifficulty(smoothedPreference)
+    : chooseTargetDifficulty(currentDifficulty, metrics);
 
   console.log("[difficulty] Computed target difficulty", {
     goal_id: goalId,
     completion_rate: metrics.completion_rate,
     skip_rate: metrics.skip_rate,
     current_difficulty: currentDifficulty,
+    has_stored_preference: hasStoredPreference,
+    previous_preference: basePreference,
+    inferred_preference: inferredPreference,
+    smoothed_preference: smoothedPreference,
     chosen_difficulty: targetDifficulty,
   });
 
