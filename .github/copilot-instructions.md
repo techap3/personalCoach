@@ -157,7 +157,7 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
   };
   ```
 - This pattern is used in `apps/backend/src/routes/tasks.ts` and `apps/backend/src/routes/adapt.ts`.
-- For the frontend (`DailySummary.tsx`), format local date components directly (year/month/day) rather than relying on `toISOString()`.
+- For frontend code such as `DailySummary.tsx`, prefer formatting local date components directly (year/month/day) rather than relying on `toISOString()`; if the current implementation still uses `new Date().toISOString().split('T')[0]`, treat that as technical debt to fix separately rather than as the recommended pattern.
 
 ### Logging
 - Backend uses **pino** (`src/logger.ts`). Import `logger` and use structured logging: `logger.info({ event: "...", ...fields }, "message")`.
