@@ -700,6 +700,8 @@ router.post("/generate", authMiddleware, async (req: AuthRequest, res) => {
     const behaviorAdjustedTasks = enforceBehavioralPreferences(difficultyBalancedTasks, {
       preferredDifficulty: userMemory?.preferred_difficulty,
       skipPattern: userMemory?.skip_pattern,
+      consistencyScore: userMemory?.consistency_score,
+      completionRate: userMemory?.avg_completion_rate,
       originalTasks: difficultyBalancedTasks,
     });
 
@@ -1304,6 +1306,8 @@ router.post("/adapt", authMiddleware, async (req: AuthRequest, res) => {
     const behaviorAdjusted = enforceBehavioralPreferences(candidate, {
       preferredDifficulty: memory?.preferred_difficulty,
       skipPattern: memory?.skip_pattern,
+      consistencyScore: memory?.consistency_score,
+      completionRate: memory?.avg_completion_rate,
       originalTasks: sourceBaseline,
     });
 
