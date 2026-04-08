@@ -1,15 +1,11 @@
-# Frontend — AI Personal Coach
+# Frontend
 
-Next.js (App Router) single-page app. Handles authentication, goal creation, plan visualization, daily tasks, and progress tracking.
+Next.js app for onboarding, goals, and daily task flows.
 
----
+## Requirements
 
-## Stack
-
-- Next.js 16, React 19, Tailwind CSS v4
-- Supabase Auth (magic link / social)
-
----
+- Node.js 20+
+- pnpm
 
 ## Setup
 
@@ -17,7 +13,7 @@ Next.js (App Router) single-page app. Handles authentication, goal creation, pla
 pnpm install
 ```
 
-Create `frontend/.env.local`:
+Create `apps/frontend/.env.local`:
 
 ```env
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
@@ -25,8 +21,12 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-supabase-anon-key
 NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
 ```
 
+## Scripts
+
 ```bash
-pnpm dev      # http://localhost:3000
-pnpm build    # production build
-pnpm lint     # ESLint
+pnpm dev
+pnpm build
+pnpm start
+pnpm lint
+pnpm test
 ```
