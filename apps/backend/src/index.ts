@@ -36,11 +36,10 @@ app.get("/health", (_, res) => {
 app.use("/goals", goalRoutes);
 app.use("/test", testRoutes);
 app.use("/tasks", taskRoutes);
-app.use("/daily-summary", (req, res, next) => {
+app.all("/daily-summary", (req, res) => {
   const queryIndex = req.originalUrl.indexOf("?");
-  const queryString = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
-  req.url = `/daily-summary${queryString}`;
-  return (taskRoutes as any)(req, res, next);
+  const query = queryIndex >= 0 ? req.originalUrl.slice(queryIndex) : "";
+  return res.redirect(307, `/tasks/daily-summary${query}`);
 });
 app.use("/adapt", adaptRoutes);
 

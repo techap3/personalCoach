@@ -1690,7 +1690,7 @@ describe("Flow tests", () => {
     await createGoal();
 
     const response = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
 
     expect(response.status).toBe(200);
@@ -1708,13 +1708,13 @@ describe("Flow tests", () => {
     await createGoal();
 
     const first = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
 
     const countAfterFirst = mockState.tables.tasks.length;
 
     const second = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
 
     expect(first.status).toBe(200);
@@ -1727,7 +1727,7 @@ describe("Flow tests", () => {
     await createGoal();
 
     const response = await request(app)
-      .get("/daily-summary?time_available=high")
+      .get("/tasks/daily-summary?time_available=high")
       .set("Authorization", authHeader());
 
     expect(response.status).toBe(200);
@@ -1739,19 +1739,19 @@ describe("Flow tests", () => {
     resetMockDb();
     await createGoal();
     const low = await request(app)
-      .get("/daily-summary?time_available=low")
+      .get("/tasks/daily-summary?time_available=low")
       .set("Authorization", authHeader());
 
     resetMockDb();
     await createGoal();
     const medium = await request(app)
-      .get("/daily-summary?time_available=medium")
+      .get("/tasks/daily-summary?time_available=medium")
       .set("Authorization", authHeader());
 
     resetMockDb();
     await createGoal();
     const high = await request(app)
-      .get("/daily-summary?time_available=high")
+      .get("/tasks/daily-summary?time_available=high")
       .set("Authorization", authHeader());
 
     expect(low.status).toBe(200);
@@ -1771,7 +1771,7 @@ describe("Flow tests", () => {
       updated_at: new Date().toISOString(),
     });
     const streak1 = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
     expect(streak1.status).toBe(200);
     expect(streak1.body.greeting).toBe("Nice start");
@@ -1784,7 +1784,7 @@ describe("Flow tests", () => {
       updated_at: new Date().toISOString(),
     });
     const streak2 = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
     expect(streak2.status).toBe(200);
     expect(streak2.body.greeting).toBe("Good to see you again");
@@ -1797,7 +1797,7 @@ describe("Flow tests", () => {
       updated_at: new Date().toISOString(),
     });
     const streak5 = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
     expect(streak5.status).toBe(200);
     expect(streak5.body.greeting).toBe("You're on fire 🔥");
@@ -1807,11 +1807,11 @@ describe("Flow tests", () => {
     await createGoal();
 
     const first = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
 
     const second = await request(app)
-      .get("/daily-summary")
+      .get("/tasks/daily-summary")
       .set("Authorization", authHeader());
 
     console.log("\n=== DAILY SUMMARY ===");
@@ -1822,7 +1822,7 @@ describe("Flow tests", () => {
     await createGoal();
 
     const low = await request(app)
-      .get("/daily-summary?time_available=low")
+      .get("/tasks/daily-summary?time_available=low")
       .set("Authorization", authHeader());
 
     console.log("low response:", low.body);
@@ -1831,10 +1831,20 @@ describe("Flow tests", () => {
     await createGoal();
 
     const high = await request(app)
-      .get("/daily-summary?time_available=high")
+      .get("/tasks/daily-summary?time_available=high")
       .set("Authorization", authHeader());
 
     console.log("high response:", high.body);
+
+    const lowCount = low.body.today.tasks.length;
+    const defaultCount = first.body.today.tasks.length;
+    const highCount = high.body.today.tasks.length;
+
+    console.log("task counts (low/default/high):", {
+      low: lowCount,
+      default: defaultCount,
+      high: highCount,
+    });
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
@@ -1843,21 +1853,56 @@ describe("Flow tests", () => {
     expect(high.status).toBe(200);
     expect(low.body.today.tasks.length).toBe(2);
     expect(high.body.today.tasks.length).toBe(5);
+    expect(lowCount).toBeLessThan(defaultCount);
+    expect(defaultCount).toBeLessThan(highCount);
   });
 
   it("task invariant check prints count/type/difficulty", async () => {
     await createGoal();
 
+    const difficultyBefore = [1, 5, 4];
+    generateTasksForStepMock.mockImplementationOnce(async () => [
+      {
+        title: "High diff task",
+        description: "Hard",
+        difficulty: difficultyBefore[0],
+        task_type: "action",
+      },
+      {
+        title: "Read docs",
+        description: "Learn",
+        difficulty: difficultyBefore[1],
+        task_type: "learn",
+      },
+      {
+        title: "Review progress",
+        description: "Review",
+        difficulty: difficultyBefore[2],
+        task_type: "review",
+      },
+    ]);
+
     const response = await request(app)
-      .get("/daily-summary?time_available=high")
+      .get("/tasks/daily-summary?time_available=high")
       .set("Authorization", authHeader());
 
     const tasks = response.body.today.tasks;
     const types = tasks.map((task: any) => task.task_type);
     const hasAction = types.includes("action");
     const hasReflective = types.includes("reflect") || types.includes("review");
+    const difficultyAfter = tasks.map((task: any) => task.difficulty);
+    const typeDistribution = tasks.reduce((acc: Record<string, number>, task: any) => {
+      acc[task.task_type] = (acc[task.task_type] ?? 0) + 1;
+      return acc;
+    }, {});
 
     console.log("\n=== TASK VALIDATION ===");
+    console.log("count:", tasks.length);
+    console.log("type distribution:", typeDistribution);
+    console.log("difficulty before/after:", {
+      before: difficultyBefore,
+      after: difficultyAfter,
+    });
     console.log(
       tasks.map((task: any) => ({
         title: task.title,
@@ -1870,5 +1915,39 @@ describe("Flow tests", () => {
     expect(tasks).toHaveLength(5);
     expect(hasAction).toBe(true);
     expect(hasReflective).toBe(true);
+  });
+
+  it("prompt behavior prints default and explicit count instructions", async () => {
+    const { buildStepTaskPrompt } = await import("../src/services/ai/prompts");
+
+    const defaultPrompt = buildStepTaskPrompt(
+      {
+        title: "Step 1",
+        description: "Do the first thing",
+        difficulty: 2,
+      },
+      []
+    );
+
+    const explicitPrompt = buildStepTaskPrompt(
+      {
+        title: "Step 1",
+        description: "Do the first thing",
+        difficulty: 2,
+      },
+      [],
+      undefined,
+      4
+    );
+
+    const defaultSystemPrompt = String(defaultPrompt[0]?.content ?? "");
+    const explicitSystemPrompt = String(explicitPrompt[0]?.content ?? "");
+
+    console.log("\n=== PROMPT BEHAVIOR ===");
+    console.log("default prompt:", defaultSystemPrompt);
+    console.log("explicit prompt:", explicitSystemPrompt);
+
+    expect(defaultSystemPrompt).toContain("Return between 3 and 5 tasks");
+    expect(explicitSystemPrompt).toContain("Return exactly 4 tasks");
   });
 });

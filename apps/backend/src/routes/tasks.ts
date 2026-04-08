@@ -886,7 +886,9 @@ async function generateTasksHandler(
     });
   }
 
-  const expectedMinCount = effectiveCount;
+  const expectedMinCount = Number.isFinite(effectiveCount)
+    ? effectiveCount
+    : MIN_TASKS;
 
   if (difficultyBalancedTasks.length < expectedMinCount || difficultyBalancedTasks.length > MAX_TASKS) {
     reqLog.error(
@@ -1034,7 +1036,12 @@ router.get("/daily-summary", authMiddleware, async (req: AuthRequest, res) => {
     .maybeSingle();
 
   if (preferenceError) {
-    console.error("[db] read failed", { error: preferenceError.message });
+    req.log?.error({
+      msg: "daily-summary user_preferences read failed",
+      error: preferenceError?.message,
+      user_id: userId,
+      task_id: null,
+    });
     return res.status(500).json({ error: "Database read failed" });
   }
 
@@ -1193,7 +1200,12 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
       .maybeSingle();
 
     if (existingTaskError) {
-      console.error("[db] read failed", { error: existingTaskError.message });
+      req.log?.error({
+        msg: "task lookup failed during update conflict path",
+        error: existingTaskError?.message,
+        user_id: userId,
+        task_id,
+      });
       return res.status(500).json({ error: "Database read failed" });
     }
 
@@ -1223,7 +1235,12 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
         .maybeSingle();
 
       if (preferenceReadError) {
-        console.error("[feedback] failed to fetch user_preferences", preferenceReadError);
+        req.log?.warn({
+          msg: "feedback degraded due to user_preferences read failure",
+          error: preferenceReadError?.message,
+          user_id: userId,
+          task_id,
+        });
         feedbackMetricsAvailable = false;
         degraded = true;
         streak = null;
@@ -1254,8 +1271,11 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
         feedbackMetricsAvailable = false;
         degraded = true;
         streak = null;
-        console.error("[feedback] failed to fetch todaysTasks", {
+        req.log?.warn({
+          msg: "feedback degraded due to todaysTasks read failure",
           error: todaysTasksError?.message,
+          user_id: userId,
+          task_id,
         });
       }
 
@@ -1269,6 +1289,7 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
     }
 
     if (
+      !degraded &&
       feedbackMetricsAvailable &&
       userId &&
       existingPreferences &&
@@ -1301,7 +1322,12 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
           );
 
         if (preferenceWriteError) {
-          console.error("[streak] write failed", preferenceWriteError);
+          req.log?.warn({
+            msg: "feedback degraded due to streak write failure",
+            error: preferenceWriteError?.message,
+            user_id: userId,
+            task_id,
+          });
           streak = null;
           degraded = true;
           feedbackMetricsAvailable = false;
@@ -1344,7 +1370,12 @@ router.post("/update", authMiddleware, async (req: AuthRequest, res) => {
       .eq("session_id", task.session_id);
 
     if (sessionTasksError) {
-      console.error("[db] read failed", { error: sessionTasksError.message });
+      req.log?.error({
+        msg: "session tasks read failed during completion check",
+        error: sessionTasksError?.message,
+        user_id: userId,
+        task_id,
+      });
       return res.json({
         status: "ok",
         message: null,

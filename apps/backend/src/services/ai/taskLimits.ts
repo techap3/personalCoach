@@ -205,6 +205,31 @@ export function enforceTaskTypeMix(
     tasks[index] = buildFallbackTaskByType(taskType, existingTitles, blockedTitles);
   };
 
+  const getSafeReplaceIndex = (
+    requiredType: TaskType,
+    preserveReflective = false
+  ) => {
+    const actionCount = tasks.filter((task) => task.task_type === "action").length;
+    const reflectiveCount = tasks.filter(
+      (task) => task.task_type === "reflect" || task.task_type === "review"
+    ).length;
+
+    const index = tasks.findIndex((task) => {
+      if (task.task_type === requiredType) return false;
+      if (task.task_type === "action" && actionCount === 1) return false;
+      if (
+        preserveReflective &&
+        (task.task_type === "reflect" || task.task_type === "review") &&
+        reflectiveCount === 1
+      ) {
+        return false;
+      }
+      return true;
+    });
+
+    return index >= 0 ? index : 0;
+  };
+
   const hasType = (type: TaskType) => tasks.some((task) => task.task_type === type);
   const hasReflective = () => hasType("reflect") || hasType("review");
 
@@ -215,32 +240,24 @@ export function enforceTaskTypeMix(
   }
 
   if (!hasType("action")) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
-    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : 0, "action");
+    replaceTaskWithType(getSafeReplaceIndex("action", true), "action");
   }
 
   if (!hasReflective()) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
-    const fallbackIndex = tasks.findIndex((task) => task.task_type !== "action");
-    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : Math.max(0, fallbackIndex), "reflect");
+    replaceTaskWithType(getSafeReplaceIndex("reflect"), "reflect");
   }
 
   if (!hasType("action")) {
-    const replaceIndex = tasks.findIndex((task) => task.task_type !== "reflect" && task.task_type !== "review");
-    replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : 0, "action");
+    replaceTaskWithType(getSafeReplaceIndex("action", true), "action");
   }
 
   if (expectedCount !== null && expectedCount >= 3) {
     if (!hasType("reflect")) {
-      const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
-      const fallbackIndex = tasks.findIndex((task) => task.task_type !== "action" && task.task_type !== "review");
-      replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : Math.max(0, fallbackIndex), "reflect");
+      replaceTaskWithType(getSafeReplaceIndex("reflect"), "reflect");
     }
 
     if (!hasType("review")) {
-      const replaceIndex = tasks.findIndex((task) => task.task_type === "learn");
-      const fallbackIndex = tasks.findIndex((task) => task.task_type !== "action" && task.task_type !== "reflect");
-      replaceTaskWithType(replaceIndex >= 0 ? replaceIndex : Math.max(0, fallbackIndex), "review");
+      replaceTaskWithType(getSafeReplaceIndex("review"), "review");
     }
   }
 
