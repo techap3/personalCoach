@@ -3,6 +3,7 @@ import { getSupabaseClient } from "../../db/supabase";
 const MEMORY_WINDOW_DAYS = 7;
 const MAX_LOG_ROWS = 500;
 const UPDATE_DEBOUNCE_MS = 2000;
+const DEBOUNCE_CLEANUP_INTERVAL_MS = 60_000;
 
 type TaskLog = {
   status?: string | null;
@@ -14,6 +15,22 @@ type TaskLog = {
 };
 
 const lastUpdateByUser = new Map<string, number>();
+let lastDebounceCleanupAt = 0;
+
+function cleanupLastUpdateCache(now = Date.now()) {
+  if (now - lastDebounceCleanupAt < DEBOUNCE_CLEANUP_INTERVAL_MS) {
+    return;
+  }
+
+  const staleBefore = now - UPDATE_DEBOUNCE_MS;
+  for (const [userId, timestamp] of lastUpdateByUser.entries()) {
+    if (timestamp < staleBefore) {
+      lastUpdateByUser.delete(userId);
+    }
+  }
+
+  lastDebounceCleanupAt = now;
+}
 
 function getWindowStartIso(days: number) {
   const now = new Date();
@@ -126,18 +143,32 @@ export function calculateConsistency(logs: TaskLog[], windowDays = MEMORY_WINDOW
     if (!timestamp) continue;
     const date = new Date(timestamp);
     if (!Number.isFinite(date.getTime())) continue;
-    uniqueDays.add(date.toISOString().slice(0, 10));
+    const localDate =
+      date.getFullYear() +
+      "-" +
+      String(date.getMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(date.getDate()).padStart(2, "0");
+    uniqueDays.add(localDate);
   }
 
   return uniqueDays.size / Math.max(1, windowDays);
 }
 
 async function fetchRecentTaskLogs(supabase: any, userId: string, windowDays = MEMORY_WINDOW_DAYS) {
-  const { data: userGoals } = await supabase
+  const { data: userGoals, error: userGoalsError } = await supabase
     .from("goals")
     .select("id")
     .eq("user_id", userId)
     .limit(200);
+
+  if (userGoalsError) {
+    console.error("[memory] Supabase error", {
+      userId,
+      error: userGoalsError.message,
+    });
+    throw userGoalsError;
+  }
 
   const goalIds = (userGoals || []).map((goal: any) => goal.id).filter(Boolean);
   if (!goalIds.length) {
@@ -146,7 +177,7 @@ async function fetchRecentTaskLogs(supabase: any, userId: string, windowDays = M
 
   const windowStartIso = getWindowStartIso(windowDays);
 
-  const { data: logs } = await supabase
+  const { data: logs, error: logsError } = await supabase
     .from("tasks")
     .select("status, difficulty, task_type, created_at, completed_at, skipped_at")
     .in("goal_id", goalIds)
@@ -155,6 +186,14 @@ async function fetchRecentTaskLogs(supabase: any, userId: string, windowDays = M
     )
     .order("created_at", { ascending: false })
     .limit(MAX_LOG_ROWS);
+
+  if (logsError) {
+    console.error("[memory] Supabase error", {
+      userId,
+      error: logsError.message,
+    });
+    throw logsError;
+  }
 
   return (logs || []) as TaskLog[];
 }
@@ -165,11 +204,11 @@ export async function updateUserPreferences(
   options?: { force?: boolean; windowDays?: number }
 ) {
   const now = Date.now();
+  cleanupLastUpdateCache(now);
   const last = lastUpdateByUser.get(userId) ?? 0;
   if (!options?.force && now - last < UPDATE_DEBOUNCE_MS) {
     return;
   }
-  lastUpdateByUser.set(userId, now);
 
   const supabase = getSupabaseClient(token);
   const windowDays = options?.windowDays ?? MEMORY_WINDOW_DAYS;
@@ -186,7 +225,7 @@ export async function updateUserPreferences(
       .filter((value): value is string => typeof value === "string")
       .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] || null;
 
-    await supabase
+    const { error: upsertError } = await supabase
       .from("user_preferences")
       .upsert(
         {
@@ -204,11 +243,22 @@ export async function updateUserPreferences(
         },
         { onConflict: "user_id" }
       );
+
+    if (upsertError) {
+      console.error("[memory] Supabase error", {
+        userId,
+        error: upsertError.message,
+      });
+      throw upsertError;
+    }
+
+    lastUpdateByUser.set(userId, now);
   } catch (error: any) {
-    console.warn("[memory] Skipping preference update", {
-      user_id: userId,
+    console.error("[memory] Supabase error", {
+      userId,
       error: error?.message,
     });
+    lastUpdateByUser.delete(userId);
   }
 }
 
@@ -224,16 +274,24 @@ export async function getUserMemory(token: string, userId: string) {
   const supabase = getSupabaseClient(token);
 
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("user_preferences")
       .select("*")
       .eq("user_id", userId)
       .maybeSingle();
 
+    if (error) {
+      console.error("[memory] Supabase error", {
+        userId,
+        error: error.message,
+      });
+      return null;
+    }
+
     return data;
   } catch (error: any) {
-    console.warn("[memory] Failed to fetch user preferences", {
-      user_id: userId,
+    console.error("[memory] Supabase error", {
+      userId,
       error: error?.message,
     });
     return null;

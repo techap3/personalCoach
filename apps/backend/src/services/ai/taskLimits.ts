@@ -292,7 +292,20 @@ export function enforceTaskCount(
   const requestedCount = Number(options?.desiredCount);
   if (Number.isFinite(requestedCount)) {
     const clampedDesired = Math.max(MIN_TASKS, Math.min(MAX_TASKS, Math.round(requestedCount)));
-    return corrected.slice(0, clampedDesired);
+    const sized = corrected.slice(0, clampedDesired);
+    const repaired = enforceTaskTypeMix(sized, {
+      blockedNormalizedTitles: options?.blockedNormalizedTitles,
+    }).slice(0, clampedDesired);
+
+    if (isValidFinalTasks(repaired, { expectedCount: clampedDesired })) {
+      return repaired;
+    }
+
+    const fallback = enforceTaskTypeMix(corrected, {
+      blockedNormalizedTitles: options?.blockedNormalizedTitles,
+    }).slice(0, clampedDesired);
+
+    return fallback;
   }
 
   return corrected.slice(0, MAX_TASKS);
