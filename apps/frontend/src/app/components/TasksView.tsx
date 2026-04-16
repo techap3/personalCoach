@@ -17,6 +17,7 @@ export default function TasksView({
   token,
   refreshTasks,
   refreshPlan,
+  onStartCoachFlow,
   onStepCompleted,
   onSessionCompleted,
 }: {
@@ -24,6 +25,7 @@ export default function TasksView({
   token: string;
   refreshTasks: () => void | Promise<void>;
   refreshPlan?: () => void | Promise<void>;
+  onStartCoachFlow?: () => void;
   onStepCompleted?: () => void;
   onSessionCompleted?: (summary: {
     completed: number;
@@ -148,6 +150,15 @@ export default function TasksView({
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-300">
           {completedTasks.length}/{visibleTasks.length} completed
         </p>
+        {onStartCoachFlow ? (
+          <button
+            type="button"
+            onClick={onStartCoachFlow}
+            className="mt-3 inline-flex items-center rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-100 transition hover:bg-slate-800"
+          >
+            Open Coach Flow
+          </button>
+        ) : null}
       </div>
 
       <div className="space-y-3">

@@ -1,26 +1,47 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --pc-bg-base: #07090d;
+  --pc-bg-surface-top: #121821;
+  --pc-bg-surface-bottom: #0e141d;
+  --pc-card-muted: #151c28;
+  --pc-card-focus-top: #262f3a;
+  --pc-card-focus-bottom: #1c2430;
+  --pc-btn-top: #1b2230;
+  --pc-btn-bottom: #121a26;
+
+  --pc-text-primary: #f3f4f6;
+  --pc-text-secondary: #9aa2ae;
+  --pc-text-helper: #767f8e;
+  --pc-gold: #e6c36a;
+  --pc-gold-soft: #d7b764;
+
+  --pc-radius-screen: 30px;
+  --pc-radius-card: 18px;
+  --pc-radius-cta: 16px;
+
+  --pc-space-1: 8px;
+  --pc-space-2: 10px;
+  --pc-space-3: 12px;
+  --pc-space-4: 14px;
+  --pc-space-5: 16px;
+  --pc-space-6: 18px;
+  --pc-space-7: 24px;
+  --pc-space-8: 28px;
+
+  --pc-shadow-soft: 0 10px 24px rgba(0, 0, 0, 0.42);
+  --pc-shadow-focus: 0 12px 26px rgba(0, 0, 0, 0.41);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--pc-bg-base);
+  --color-foreground: var(--pc-text-primary);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--pc-bg-base);
+  color: var(--pc-text-primary);
+  font-family: var(--font-geist-sans), Manrope, system-ui, -apple-system, sans-serif;
 }
