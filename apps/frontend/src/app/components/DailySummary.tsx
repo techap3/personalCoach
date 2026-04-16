@@ -12,8 +12,10 @@ type Task = {
 
 export default function DailySummary({
   tasks,
+  onOpenCoachFlow,
 }: {
   tasks: Task[];
+  onOpenCoachFlow?: () => void;
 }) {
   if (!tasks || tasks.length === 0) return null;
 
@@ -60,6 +62,16 @@ export default function DailySummary({
         {percent > 0 && percent < 60 && "⚡ Momentum started. Keep going."}
         {percent === 0 && "🚀 Start small. Just complete one task."}
       </div>
+
+      {onOpenCoachFlow ? (
+        <button
+          type="button"
+          onClick={onOpenCoachFlow}
+          className="mt-4 inline-flex items-center rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-100 transition hover:bg-slate-800"
+        >
+          Open Coach Flow
+        </button>
+      ) : null}
     </div>
   );
 }
