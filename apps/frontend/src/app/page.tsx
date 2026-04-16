@@ -231,7 +231,6 @@ export default function Home() {
           setSessionCompletedMessage(null);
           setSessionSummary(null);
         }
-        setStepCompleted(false);
         setLatestSessionStatus(SESSION_STATUS.COMPLETED);
         setLatestSessionType(normalizeSessionType(responseSessionType));
         setGenerationInProgress(false);
@@ -588,14 +587,12 @@ export default function Home() {
 
     setGeneratingTasks(true);
     setGenerateError(null);
-    setStepCompleted(false);
 
     try {
       const res = await fetch(`${apiBaseUrl}/tasks/generate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ goal_id: goalId }),
       });
